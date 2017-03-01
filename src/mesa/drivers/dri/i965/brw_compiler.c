@@ -107,7 +107,7 @@ brw_compiler_create(void *mem_ctx, const struct gen_device_info *devinfo)
    brw_fs_alloc_reg_sets(compiler);
    brw_vec4_alloc_reg_set(compiler);
 
-   compiler->precise_trig = env_var_as_boolean("INTEL_PRECISE_TRIG", false);
+   compiler->precise_trig = env_var_as_boolean("INTEL_PRECISE_TRIG", true);
 
    compiler->scalar_stage[MESA_SHADER_VERTEX] =
       devinfo->gen >= 8 && !(INTEL_DEBUG & DEBUG_VEC4VS);
