@@ -56,7 +56,11 @@ compiler_perf_log(void *data, const char *fmt, ...)
 static bool
 anv_device_get_cache_uuid(void *uuid)
 {
+#ifdef ANDROID
+   const struct build_id_note *note = build_id_find_nhdr("vulkan.mesa_intel.so");
+#else
    const struct build_id_note *note = build_id_find_nhdr("libvulkan_intel.so");
+#endif
    if (!note)
       return false;
 
