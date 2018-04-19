@@ -135,6 +135,11 @@ DRI_CONF_OPT_BEGIN_B(allow_glsl_cross_stage_interpolation_mismatch, def) \
         DRI_CONF_DESC(en,gettext("Allow interpolation qualifier mismatch across shader stages")) \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_ENABLE_BOUNDING_BOX_CULLING(def) \
+DRI_CONF_OPT_BEGIN_B(enable_bounding_box_culling, def) \
+        DRI_CONF_DESC(en,gettext("Enable bounding box culling in CPU")) \
+DRI_CONF_OPT_END
+
 /**
  * \brief Image quality-related options
  */

@@ -4876,6 +4876,24 @@ link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
 
          switch (stage) {
          case MESA_SHADER_VERTEX:
+#ifdef MESA_BBOX_OPT
+            if (shader_list[MESA_SHADER_VERTEX][0] != NULL) {
+               sh->linked_bbox_simple_shader =
+                  shader_list[MESA_SHADER_VERTEX][0]->shader_bbox_simple_shader;
+                 /*TBD: How do we handle multiple Vertex Shaders
+                  *     being linked ??
+                  *     MVP Name copied to get MVP in VBO
+                  */
+                 strncpy((char *)sh->linkedshaderMVP,
+                     shader_list[MESA_SHADER_VERTEX][0]->shaderMVP,
+                     strlen(shader_list[MESA_SHADER_VERTEX][0]->shaderMVP));
+                 /* Vertex Position attribute name */
+                 strncpy((char *)sh->linkedshaderVertPosition,
+                     shader_list[MESA_SHADER_VERTEX][0]->shaderVertPosition,
+                     strlen(
+                     shader_list[MESA_SHADER_VERTEX][0]->shaderVertPosition));
+              }
+#endif
             validate_vertex_shader_executable(prog, sh, ctx);
             break;
          case MESA_SHADER_TESS_CTRL:

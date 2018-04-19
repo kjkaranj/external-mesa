@@ -48,6 +48,9 @@
 #include "varray.h"
 #include "util/u_atomic.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo/vbo_bbox.h"
+#endif
 
 /* Debug flags */
 /*#define VBO_DEBUG*/
@@ -2254,6 +2257,10 @@ buffer_sub_data(GLenum target, GLuint buffer, GLintptr offset,
 
    if (no_error || validate_buffer_sub_data(ctx, bufObj, offset, size, func))
       _mesa_buffer_sub_data(ctx, bufObj, offset, size, data);
+
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_element_buffer_update(ctx,bufObj,data,offset,size);
+#endif
 }
 
 
@@ -2589,9 +2596,17 @@ validate_and_unmap_buffer(struct gl_context *ctx,
 #endif
 
 #ifdef VBO_DEBUG
+#ifdef MESA_BBOX_OPT
+   if (bufObj->StorageFlags & GL_MAP_WRITE_BIT) {
+#else
    if (bufObj->AccessFlags & GL_MAP_WRITE_BIT) {
+#endif
       GLuint i, unchanged = 0;
+#ifdef MESA_BBOX_OPT
+      GLubyte *b = (GLubyte *) bufObj->Data;
+#else
       GLubyte *b = (GLubyte *) bufObj->Pointer;
+#endif
       GLint pos = -1;
       /* check which bytes changed */
       for (i = 0; i < bufObj->Size - 1; i++) {
@@ -3154,7 +3169,11 @@ map_buffer_range(struct gl_context *ctx, struct gl_buffer_object *bufObj,
       /* Access must be write only */
       if ((access & GL_MAP_WRITE_BIT) && (!(access & ~GL_MAP_WRITE_BIT))) {
          GLuint i;
+#ifdef MESA_BBOX_OPT
+         GLubyte *b = (GLubyte *) bufObj->Data;
+#else
          GLubyte *b = (GLubyte *) bufObj->Pointer;
+#endif
          for (i = 0; i < bufObj->Size; i++)
             b[i] = i & 0xff;
       }

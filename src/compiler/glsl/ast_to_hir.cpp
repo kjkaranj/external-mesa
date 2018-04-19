@@ -62,7 +62,6 @@
 #include "builtin_functions.h"
 
 using namespace ir_builder;
-
 static void
 detect_conflicting_assignments(struct _mesa_glsl_parse_state *state,
                                exec_list *instructions);
@@ -1325,6 +1324,124 @@ ast_expression::set_is_lhs(bool new_value)
       this->subexpressions[0]->set_is_lhs(new_value);
 }
 
+#ifdef MESA_BBOX_OPT
+static bool
+is_simple_shader(exec_list *instructions, ast_expression *simple_ast_root,
+                 struct _mesa_glsl_parse_state *state)
+{
+   ast_expression * subex0 = simple_ast_root->subexpressions[0];
+   ast_expression * subex1 = simple_ast_root->subexpressions[1];
+
+   char temp_identifier[100];
+
+   subex0->set_is_lhs(true);
+
+   if (subex1->oper == ast_mul)
+   {
+      ir_rvalue *rhsParts[3];
+      rhsParts[0] = subex1->subexpressions[0]->hir(instructions, state);
+      rhsParts[1] = subex1->subexpressions[1]->hir(instructions, state);
+
+      if (rhsParts[0]->type->gl_type == GL_FLOAT_MAT4 &&
+          rhsParts[1]->type->gl_type == GL_FLOAT_VEC4) {
+         foreach_list_typed (ast_node, ast, link,
+                             &subex1->subexpressions[1]->expressions) {
+            if (((ast_expression *)ast)->oper != ast_identifier &&
+               (((ast_expression *)ast)->oper != ast_int_constant) &&
+               (((ast_expression *)ast)->oper != ast_float_constant)) {
+               return false;
+            }
+            if (((ast_expression *)ast)->oper == ast_identifier &&
+                ((ast_expression *)ast)->primary_expression.identifier) {
+                   strncpy((char *)state->stateVertPosition,
+                   ((ast_expression *)ast)->primary_expression.identifier,
+                strlen(((ast_expression *)ast)->primary_expression.identifier));
+            }
+         }
+      }
+      if (subex0->oper == ast_identifier) {
+         if (!strcmp(subex0->primary_expression.identifier,"gl_Position")) {
+            if(subex0 && subex0->primary_expression.identifier) {
+               strncpy((char *)temp_identifier,
+                    subex0->primary_expression.identifier,
+                    strlen(subex0->primary_expression.identifier));
+            } else {
+              return false;
+            }
+            if(subex1 && subex1->subexpressions[0] &&
+              subex1->subexpressions[0]->primary_expression.identifier) {
+                strncpy((char *)state->stateMVP,
+                   subex1->subexpressions[0]->primary_expression.identifier,
+            strlen(subex1->subexpressions[0]->primary_expression.identifier));
+            } else {
+              return false;
+            }
+
+            return true;
+         } else {
+            if(subex0 && subex0->primary_expression.identifier) {
+               strncpy((char *)temp_identifier,
+                  subex0->primary_expression.identifier,
+                  strlen(subex0->primary_expression.identifier));
+            } else {
+              return true;
+            }
+
+            if (subex1->subexpressions[0]->oper == ast_identifier) {
+               if(subex1 && subex1->subexpressions[0] &&
+                  subex1->subexpressions[0]->primary_expression.identifier) {
+                     strncpy((char *)state->stateMVP,
+                     subex1->subexpressions[0]->primary_expression.identifier,
+              strlen(subex1->subexpressions[0]->primary_expression.identifier));
+               } else {
+                  return true;
+               }
+            }
+            return false; //Return false to trigger further parsing.
+         }
+      } else {
+        return false;
+      }
+   } else {
+      if (subex0->primary_expression.identifier != NULL)
+        if (!strcmp(subex0->primary_expression.identifier,"gl_Position") &&
+          (strlen(temp_identifier) > 0)) { //gl_position = temp;
+           if (subex1->oper == ast_identifier) {
+              if (!strcmp((char *)temp_identifier,
+                 subex1->primary_expression.identifier)) {
+                   return true;
+              }
+           } else {
+              return false;
+           }
+        }
+   }
+   return false;
+}
+/*
+ * Function to check if LHS of assign is an input variable Eg: in_position
+ */
+
+static bool
+is_attribute(struct _mesa_glsl_parse_state *state)
+{
+   ir_variable *const var = state->symbols->get_variable(state->stateVertPosition);
+   ir_rvalue *result = NULL;
+   void *ctx = state;
+   if (var != NULL)
+   {
+         result = new(ctx) ir_dereference_variable(var);
+         (void)result;
+         if (var->data.mode ==  ir_var_shader_in)
+             return true;
+
+   }
+
+   return false;
+
+}
+#endif //MESA_BBOX_OPT
+
 ir_rvalue *
 ast_expression::do_hir(exec_list *instructions,
                        struct _mesa_glsl_parse_state *state,
@@ -1400,6 +1517,55 @@ ast_expression::do_hir(exec_list *instructions,
       unreachable("ast_aggregate: Should never get here.");
 
    case ast_assign: {
+#ifdef MESA_BBOX_OPT
+      if (state->stage == MESA_SHADER_VERTEX &&
+          !state->state_bbox_simple_shader &&
+          is_simple_shader(instructions,this,state) &&
+          !state->state_shader_analysis_complete)
+      {
+         state->state_bbox_simple_shader = true;
+      }
+
+      if (state->state_bbox_simple_shader &&
+          !state->state_shader_analysis_complete) {
+         if (!is_attribute(state)) {
+            if ((ir_dereference_variable *)op[0] != NULL &&
+                ((ir_dereference_variable *)op[0])->var->name != NULL &&
+                strlen(state->stateVertPosition) != 0)
+            if (!strcmp(((ir_dereference_variable *)op[0])->var->name,
+                          state->stateVertPosition) ) {
+               if (((ir_instruction *)op[0])->ir_type == ir_type_variable ||
+                    ((ir_instruction *)op[0])->ir_type ==
+                                      ir_type_dereference_variable &&
+                    (ir_dereference_variable *)op[1] != NULL &&
+                    ((ir_dereference_variable *)op[1])->ir_type ==
+                     ir_type_dereference_variable) {
+                  if ((((ir_instruction *)op[1])->ir_type == ir_type_variable ||
+                      ((ir_instruction *)op[1])->ir_type ==
+                        ir_type_dereference_variable) &&
+                       ((ir_dereference_variable *)op[1])->var->name) {
+                     strncpy((char *)state->stateVertPosition,
+                           (char *)((ir_dereference_variable *)op[1])->var->name,
+                        strlen(((ir_dereference_variable *)op[1])->var->name));
+                        state->state_shader_analysis_complete = true;
+                  }
+               }
+               else {
+                  state->state_bbox_simple_shader = false;
+                  state->state_shader_analysis_complete = true;
+               }
+            }
+            else {
+               state->state_bbox_simple_shader = false;
+               state->state_shader_analysis_complete = true;
+
+            }
+         }
+         else {
+            state->state_shader_analysis_complete = true;
+         }
+      }
+#endif //MESA_BBOX_OPT
       this->subexpressions[0]->set_is_lhs(true);
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);

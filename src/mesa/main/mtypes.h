@@ -1359,6 +1359,9 @@ struct gl_buffer_object
    bool MinMaxCacheDirty;
 
    bool HandleAllocated; /**< GL_ARB_bindless_texture */
+#ifdef MESA_BBOX_OPT
+   int data_change_counter; //TBD: Same as RefCount to check
+#endif
 };
 
 
@@ -2535,6 +2538,12 @@ struct gl_linked_shader
     * stores information that is also needed during linking.
     */
    struct gl_shader_spirv_data *spirv_data;
+
+#ifdef MESA_BBOX_OPT
+   bool linked_bbox_simple_shader;
+   char linkedshaderMVP[20];
+   char linkedshaderVertPosition[100];
+#endif
 };
 
 
@@ -2631,6 +2640,11 @@ struct gl_shader
 
    /* ARB_gl_spirv related data */
    struct gl_shader_spirv_data *spirv_data;
+#ifdef MESA_BBOX_OPT
+   bool shader_bbox_simple_shader;
+   char shaderMVP[20];
+   char shaderVertPosition[100];
+#endif
 };
 
 
@@ -2902,6 +2916,9 @@ struct gl_shader_program_data
     * ARB_gl_spirv extension.
     */
    bool spirv;
+#ifdef MESA_BBOX_OPT
+   GLuint vbo_bbox_mvp_location;
+#endif
 };
 
 /**
@@ -3108,6 +3125,10 @@ struct gl_pipeline_shader_state
 
    /** Pipeline objects */
    struct _mesa_HashTable *Objects;
+#ifdef MESA_BBOX_OPT
+   /* Bounding box draw optimization control structure */
+   struct mesa_bbox_opt *BboxOpt;
+#endif
 };
 
 /**
@@ -4076,6 +4097,12 @@ struct gl_constants
 
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
+
+#ifdef MESA_BBOX_OPT
+   /** MESA_BBOX_OPT Runtime enable_bounding_box_culling*/
+   bool EnableBoundingBoxCulling;
+#endif
+
 };
 
 
@@ -4720,6 +4747,21 @@ struct gl_semaphore_object
    GLuint Name;            /**< hash table ID/name */
 };
 
+#ifdef MESA_BBOX_OPT
+/**
+ * Bounding volume classification types
+ */
+typedef enum
+{
+    BOUNDING_VOLUME_AABB = 0,
+    BOUNDING_VOLUME_OBB = 1,
+    BOUNDING_VOLUME_SPHERE = 2,
+    BOUNDING_VOLUME_DOP = 3,
+    BOUNDING_VOULME_MIXED = 4,
+    BOUNDING_VOLUME_MAX = 5,
+} bounding_volume_type;
+#endif //MESA_BBOX_OPT
+
 /**
  * Mesa rendering context.
  *
@@ -5096,6 +5138,15 @@ struct gl_context
    struct hash_table_u64 *ResidentTextureHandles;
    struct hash_table_u64 *ResidentImageHandles;
    /*@}*/
+
+#ifdef MESA_BBOX_OPT
+   /**
+    * Bounding volume type
+    *
+    */
+    bounding_volume_type volume_type;
+#endif //MESA_BBOX_OPT
+
 };
 
 /**

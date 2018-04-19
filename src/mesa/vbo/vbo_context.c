@@ -36,6 +36,9 @@
 #include "vbo.h"
 #include "vbo_private.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo_bbox.h"
+#endif
 
 static GLuint
 check_size(const GLfloat *attr)
@@ -199,6 +202,10 @@ _vbo_CreateContext(struct gl_context *ctx)
    if (ctx->API == API_OPENGL_COMPAT)
       vbo_save_init(ctx);
 
+#ifdef MESA_BBOX_OPT //Hard coded to AABB for now
+   ctx->volume_type = BOUNDING_VOLUME_AABB;
+#endif
+
    vbo->VAO = _mesa_new_vao(ctx, ~((GLuint)0));
    /* The exec VAO assumes to have all arributes bound to binding 0 */
    for (unsigned i = 0; i < VERT_ATTRIB_MAX; ++i)
@@ -219,7 +226,9 @@ _vbo_DestroyContext(struct gl_context *ctx)
       _ae_destroy_context(ctx);
       ctx->aelt_context = NULL;
    }
-
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_free(ctx);
+#endif
    if (vbo) {
 
       _mesa_reference_buffer_object(ctx, &vbo->binding.BufferObj, NULL);

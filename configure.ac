@@ -278,7 +278,8 @@ _SAVE_LDFLAGS="$LDFLAGS"
 _SAVE_CPPFLAGS="$CPPFLAGS"
 
 dnl Compiler macros
-DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
+DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -DMESA_BBOX_OPT"
+dnl DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
 AC_SUBST([DEFINES])
 android=no
 case "$host_os" in
@@ -295,10 +296,38 @@ esac
 
 AM_CONDITIONAL(HAVE_ANDROID, test "x$android" = xyes)
 
+
+dnl Conditional parameters for enabling BBOX file compilation in Makefile
+dnl bbox=yes
+dnl MESA_BBOX_ENABLE=true
+dnl AM_CONDITIONAL([MESA_BBOX_ENABLE], [test x$bbox= xyes])
+
 dnl
 dnl Check compiler flags
 dnl
-AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall"])
+
+AC_ARG_WITH([swr-archs],
+    [AS_HELP_STRING([--with-swr-archs@<:@=DIRS...@:>@],
+        [comma delimited swr architectures list, e.g.
+        "avx,avx2,sse4.1,sse4.2" @<:@default="sse4.1,sse4.2"@:>@])],
+    [with_swr_archs="$withval"],
+    [with_swr_archs="sse4.1,sse4.2"])
+
+swr_archs=`IFS=', '; echo $with_swr_archs`
+if test "$swr_archs" = "avx"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -mavx"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -mavx"])
+elif test "$swr_archs" = "avx2"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -mavx -mavx2"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -mavx -mavx2"])
+elif test "$swr_archs" = "sse4.1"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1"])
+elif test "$swr_archs" = "sse4.2"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -msse4.2"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -msse4.2"])
+fi
+
 AX_CHECK_COMPILE_FLAG([-Werror=implicit-function-declaration], [CFLAGS="$CFLAGS -Werror=implicit-function-declaration"])
 AX_CHECK_COMPILE_FLAG([-Werror=missing-prototypes],            [CFLAGS="$CFLAGS -Werror=missing-prototypes"])
 AX_CHECK_COMPILE_FLAG([-Wmissing-prototypes],                  [CFLAGS="$CFLAGS -Wmissing-prototypes"])
@@ -313,7 +342,6 @@ dnl
 dnl Check C++ compiler flags
 dnl
 AC_LANG_PUSH([C++])
-AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall"])
 AX_CHECK_COMPILE_FLAG([-fno-math-errno],                       [CXXFLAGS="$CXXFLAGS -fno-math-errno"])
 AX_CHECK_COMPILE_FLAG([-fno-trapping-math],                    [CXXFLAGS="$CXXFLAGS -fno-trapping-math"])
 AX_CHECK_COMPILE_FLAG([-fvisibility=hidden],                   [VISIBILITY_CXXFLAGS="-fvisibility=hidden"])

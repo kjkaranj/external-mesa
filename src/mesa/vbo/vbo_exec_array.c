@@ -39,6 +39,10 @@
 #include "main/macros.h"
 #include "main/transformfeedback.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo_bbox.h"
+#endif
+
 typedef struct {
    GLuint count;
    GLuint primCount;
@@ -784,6 +788,16 @@ skip_draw_elements(struct gl_context *ctx, GLsizei count,
  * Do the rendering for a glDrawElements or glDrawRangeElements call after
  * we've validated buffer bounds, etc.
  */
+#ifdef MESA_BBOX_OPT
+void
+vbo_validated_drawrangeelements(struct gl_context *ctx, GLenum mode,
+                                GLboolean index_bounds_valid,
+                                GLuint start, GLuint end,
+                                GLsizei count, GLenum type,
+                                const GLvoid * indices,
+                                GLint basevertex, GLuint numInstances,
+                                GLuint baseInstance)
+#else
 static void
 vbo_validated_drawrangeelements(struct gl_context *ctx, GLenum mode,
                                 GLboolean index_bounds_valid,
@@ -792,6 +806,7 @@ vbo_validated_drawrangeelements(struct gl_context *ctx, GLenum mode,
                                 const GLvoid * indices,
                                 GLint basevertex, GLuint numInstances,
                                 GLuint baseInstance)
+#endif
 {
    struct _mesa_index_buffer ib;
    struct _mesa_prim prim;
@@ -997,6 +1012,11 @@ vbo_exec_DrawElements(GLenum mode, GLsizei count, GLenum type,
       _mesa_debug(ctx, "glDrawElements(%s, %u, %s, %p)\n",
                   _mesa_enum_to_string(mode), count,
                   _mesa_enum_to_string(type), indices);
+#ifdef MESA_BBOX_OPT
+      MESA_BBOX_PRINT("glDrawElements(%s, %u, %s, %p)\n",
+                  _mesa_enum_to_string(mode), count,
+                  _mesa_enum_to_string(type), indices);
+#endif
 
    FLUSH_FOR_DRAW(ctx);
 
@@ -1011,9 +1031,13 @@ vbo_exec_DrawElements(GLenum mode, GLsizei count, GLenum type,
       if (!_mesa_validate_DrawElements(ctx, mode, count, type, indices))
          return;
    }
-
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_drawelements(ctx, mode, GL_FALSE, 0, ~0,
+                         count, type, indices, 0, 1, 0);
+#else
    vbo_validated_drawrangeelements(ctx, mode, GL_FALSE, 0, ~0,
                                    count, type, indices, 0, 1, 0);
+#endif
 }
 
 
@@ -1045,8 +1069,13 @@ vbo_exec_DrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
          return;
    }
 
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_drawelements(ctx, mode, GL_FALSE, 0, ~0,
+                                   count, type, indices, basevertex, 1, 0);
+#else
    vbo_validated_drawrangeelements(ctx, mode, GL_FALSE, 0, ~0,
                                    count, type, indices, basevertex, 1, 0);
+#endif
 }
 
 
@@ -1078,9 +1107,13 @@ vbo_exec_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
                                                 indices, numInstances))
          return;
    }
-
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_drawelements(ctx, mode, GL_FALSE, 0, ~0,
+                                   count, type, indices, 0, numInstances, 0);
+#else
    vbo_validated_drawrangeelements(ctx, mode, GL_FALSE, 0, ~0,
                                    count, type, indices, 0, numInstances, 0);
+#endif
 }
 
 

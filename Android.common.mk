@@ -21,6 +21,8 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+MESA_BBOX_ENABLE=true
+
 ifeq ($(LOCAL_IS_HOST_MODULE),true)
 LOCAL_CFLAGS += -D_GNU_SOURCE
 endif
@@ -80,12 +82,20 @@ LOCAL_CFLAGS += \
 	-fno-trapping-math \
 	-Wno-sign-compare
 
+ifeq ($(MESA_BBOX_ENABLE),true)
+LOCAL_CFLAGS += -DMESA_BBOX_OPT
+endif
+
 LOCAL_CPPFLAGS += \
 	-D__STDC_CONSTANT_MACROS \
 	-D__STDC_FORMAT_MACROS \
 	-D__STDC_LIMIT_MACROS \
 	-Wno-error=non-virtual-dtor \
 	-Wno-non-virtual-dtor
+
+ifeq ($(MESA_BBOX_ENABLE),true)
+LOCAL_CPPFLAGS += -DMESA_BBOX_OPT
+endif
 
 # mesa requires at least c99 compiler
 LOCAL_CONLYFLAGS += \
@@ -97,6 +107,15 @@ LOCAL_CONLYFLAGS += \
 ifeq ($(filter 5 6 7 8 9, $(MESA_ANDROID_MAJOR_VERSION)),)
 LOCAL_CFLAGS += -DHAVE_TIMESPEC_GET
 endif
+
+ifeq ($(MESA_BBOX_ENABLE),true)
+#if defined(CONFIG_AS_AVX)
+LOCAL_CONLYFLAGS += -mavx
+#elif
+LOCAL_CONLYFLAGS += -msse4.1
+#endif
+endif
+
 
 ifeq ($(strip $(MESA_ENABLE_ASM)),true)
 ifeq ($(TARGET_ARCH),x86)

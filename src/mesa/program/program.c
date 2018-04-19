@@ -43,6 +43,9 @@
 #include "util/ralloc.h"
 #include "util/u_atomic.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo/vbo_bbox.h"
+#endif
 
 /**
  * A pointer to this dummy program is put into the hash table when

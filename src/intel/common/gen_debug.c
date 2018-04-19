@@ -106,6 +106,13 @@ intel_debug_flag_for_shader_stage(gl_shader_stage stage)
 static void
 brw_process_intel_debug_variable_once(void)
 {
+#if defined(__ANDROID__) || defined(ANDROID)
+   setenv("MESA_GLSL_CACHE_DISABLE","true",1);
+   setenv("MESA_BBOX_MIN_VERTEX_CNT", "999", 1);
+   setenv("MESA_BBOX_OPT_ENABLE", "3", 1);
+   setenv("MESA_OPT_SPLIT_SIZE", "198", 1);
+#endif
+
    INTEL_DEBUG = parse_debug_string(getenv("INTEL_DEBUG"), debug_control);
 }
 

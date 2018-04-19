@@ -2121,6 +2121,16 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    if (!state->error && !state->translation_unit.is_empty())
       _mesa_ast_to_hir(shader->ir, state);
 
+#ifdef MESA_BBOX_OPT
+   shader->shader_bbox_simple_shader = state->state_bbox_simple_shader;
+   if (shader->shader_bbox_simple_shader)
+   {
+        strncpy((char *)shader->shaderMVP,state->stateMVP,
+                        strlen(state->stateMVP));
+        strncpy((char *)shader->shaderVertPosition,state->stateVertPosition,
+                        strlen(state->stateVertPosition));
+   }
+#endif //MESA_BBOX_OPT
    if (!state->error) {
       validate_ir_tree(shader->ir);
 

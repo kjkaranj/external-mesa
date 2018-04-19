@@ -48,6 +48,10 @@
 
 #include "vbo/vbo.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo/vbo_bbox.h"
+#endif
+
 #include "drivers/common/driverfuncs.h"
 #include "drivers/common/meta.h"
 #include "utils.h"
@@ -890,6 +894,11 @@ brw_process_driconf_options(struct brw_context *brw)
    ctx->Const.AllowGLSLCrossStageInterpolationMismatch =
       driQueryOptionb(options, "allow_glsl_cross_stage_interpolation_mismatch");
 
+#ifdef MESA_BBOX_OPT
+   ctx->Const.EnableBoundingBoxCulling =
+      driQueryOptionb(options, "enable_bounding_box_culling");
+#endif //MESA_BBOX_OPT
+
    ctx->Const.dri_config_options_sha1 = ralloc_array(brw, unsigned char, 20);
    driComputeOptionsSha1(&brw->screen->optionCache,
                          ctx->Const.dri_config_options_sha1);
@@ -1000,6 +1009,14 @@ brwCreateContext(gl_api api,
    _mesa_meta_init(ctx);
 
    brw_process_driconf_options(brw);
+
+#ifdef MESA_BBOX_OPT
+   if (ctx->Const.EnableBoundingBoxCulling) {
+        MESA_BBOX("EnableBoundingBoxCulling True\n");
+        vbo_bbox_init(ctx);
+   } else
+        MESA_BBOX("EnableBoundingBoxCulling False\n");
+#endif //MESA_BBOX_OPT
 
    if (INTEL_DEBUG & DEBUG_PERF)
       brw->perf_debug = true;

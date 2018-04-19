@@ -1,4 +1,5 @@
 ### Lists of source files, included by Makefiles
+MESA_BBOX_ENABLE = false
 
 # this is part of MAIN_FILES
 MAIN_ES_FILES = \
@@ -400,6 +401,7 @@ TNL_FILES = \
 	tnl/t_vp_build.c \
 	tnl/t_vp_build.h
 
+
 VBO_FILES = \
 	vbo/vbo_attrib.h \
 	vbo/vbo_attrib_tmp.h \
@@ -421,6 +423,15 @@ VBO_FILES = \
 	vbo/vbo_save_draw.c \
 	vbo/vbo_save.h \
 	vbo/vbo_save_loopback.c
+
+#ifeq($(MESA_BBOX_ENABLE), true)
+
+VBO_FILES += \
+	vbo/vbo_bbox_cache.c \
+	vbo/vbo_bbox.c \
+	vbo/vbo_bbox.h
+
+#endif
 
 STATETRACKER_FILES = \
 	state_tracker/st_atifs_to_tgsi.c \

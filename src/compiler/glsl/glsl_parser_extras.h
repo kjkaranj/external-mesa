@@ -887,6 +887,13 @@ struct _mesa_glsl_parse_state {
     * so we can check totals aren't too large.
     */
    unsigned clip_dist_size, cull_dist_size;
+
+#ifdef MESA_BBOX_OPT
+   bool state_shader_analysis_complete;
+   bool state_bbox_simple_shader;
+   char stateMVP[20] = {'\0'};
+   char stateVertPosition[100] = {'\0'};
+#endif
 };
 
 # define YYLLOC_DEFAULT(Current, Rhs, N)                        \
