@@ -89,6 +89,8 @@
 
 #define PAGE_SIZE 4096
 
+#define PAGE_SIZE 4096
+
 #define FILE_DEBUG_FLAG DEBUG_BUFMGR
 
 static inline int
