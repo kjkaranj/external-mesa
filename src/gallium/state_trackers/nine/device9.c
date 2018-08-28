@@ -205,7 +205,7 @@ NineDevice9_ctor( struct NineDevice9 *This,
     if (!This->cso_sw) { return E_OUTOFMEMORY; }
 
     /* Create first, it messes up our state. */
-    This->hud = hud_create(This->context.pipe, This->context.cso); /* NULL result is fine */
+    This->hud = hud_create(This->context.cso, NULL); /* NULL result is fine */
 
     /* Available memory counter. Updated only for allocations with this device
      * instance. This is the Win 7 behavior.
@@ -473,12 +473,8 @@ NineDevice9_ctor( struct NineDevice9 *This,
     /* Allocate upload helper for drivers that suck (from st pov ;). */
 
     This->driver_caps.user_vbufs = GET_PCAP(USER_VERTEX_BUFFERS) && !This->csmt_active;
-    This->driver_caps.user_cbufs = GET_PCAP(USER_CONSTANT_BUFFERS);
     This->driver_caps.user_sw_vbufs = This->screen_sw->get_param(This->screen_sw, PIPE_CAP_USER_VERTEX_BUFFERS);
-    This->driver_caps.user_sw_cbufs = This->screen_sw->get_param(This->screen_sw, PIPE_CAP_USER_CONSTANT_BUFFERS);
     This->vertex_uploader = This->csmt_active ? This->pipe_secondary->stream_uploader : This->context.pipe->stream_uploader;
-    if (!This->driver_caps.user_cbufs)
-        This->constbuf_alignment = GET_PCAP(CONSTANT_BUFFER_OFFSET_ALIGNMENT);
     This->driver_caps.window_space_position_support = GET_PCAP(TGSI_VS_WINDOW_SPACE_POSITION);
     This->driver_caps.vs_integer = pScreen->get_shader_param(pScreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS);
     This->driver_caps.ps_integer = pScreen->get_shader_param(pScreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS);
@@ -1584,6 +1580,7 @@ NineDevice9_StretchRect( struct NineDevice9 *This,
     user_assert(screen->is_format_supported(screen, src_res->format,
                                             src_res->target,
                                             src_res->nr_samples,
+                                            src_res->nr_storage_samples,
                                             PIPE_BIND_SAMPLER_VIEW),
                 D3DERR_INVALIDCALL);
 
@@ -1709,6 +1706,7 @@ NineDevice9_StretchRect( struct NineDevice9 *This,
         user_assert(screen->is_format_supported(screen, dst_res->format,
                                                 dst_res->target,
                                                 dst_res->nr_samples,
+                                                dst_res->nr_storage_samples,
                                                 zs ? PIPE_BIND_DEPTH_STENCIL :
                                                 PIPE_BIND_RENDER_TARGET),
                     D3DERR_INVALIDCALL);
@@ -3012,7 +3010,7 @@ NineDevice9_ProcessVertices( struct NineDevice9 *This,
         templ.bind = PIPE_BIND_STREAM_OUTPUT;
         templ.usage = PIPE_USAGE_STREAM;
         templ.height0 = templ.depth0 = templ.array_size = 1;
-        templ.last_level = templ.nr_samples = 0;
+        templ.last_level = templ.nr_samples = templ.nr_storage_samples = 0;
 
         resource = screen_sw->resource_create(screen_sw, &templ);
         if (!resource)

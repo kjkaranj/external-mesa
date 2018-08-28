@@ -13,6 +13,7 @@ MESA_UTIL_FILES := \
 	format_r11g11b10f.h \
 	format_rgb9e5.h \
 	format_srgb.h \
+	futex.h \
 	half_float.c \
 	half_float.h \
 	hash_table.c \
@@ -21,12 +22,18 @@ MESA_UTIL_FILES := \
 	macros.h \
 	mesa-sha1.c \
 	mesa-sha1.h \
+	os_time.c \
+	os_time.h \
+	u_process.c \
+	u_process.h \
 	sha1/sha1.c \
 	sha1/sha1.h \
 	ralloc.c \
 	ralloc.h \
 	rand_xor.c \
 	rand_xor.h \
+	rb_tree.c \
+	rb_tree.h \
 	register_allocate.c \
 	register_allocate.h \
 	rgtc.c \
@@ -35,6 +42,7 @@ MESA_UTIL_FILES := \
 	set.c \
 	set.h \
 	simple_list.h \
+	simple_mtx.h \
 	slab.c \
 	slab.h \
 	string_buffer.c \
@@ -52,7 +60,9 @@ MESA_UTIL_FILES := \
 	u_string.h \
 	u_thread.h \
 	u_vector.c \
-	u_vector.h
+	u_vector.h \
+	vma.c \
+	vma.h
 
 MESA_UTIL_GENERATED_FILES = \
 	format_srgb.c

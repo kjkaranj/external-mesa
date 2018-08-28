@@ -95,10 +95,13 @@ void brw_nir_analyze_boolean_resolves(nir_shader *nir);
 nir_shader *brw_preprocess_nir(const struct brw_compiler *compiler,
                                nir_shader *nir);
 
+void
+brw_nir_link_shaders(const struct brw_compiler *compiler,
+                     nir_shader **producer, nir_shader **consumer);
+
 bool brw_nir_lower_cs_intrinsics(nir_shader *nir,
-                                 struct brw_cs_prog_data *prog_data);
+                                 unsigned dispatch_width);
 void brw_nir_lower_vs_inputs(nir_shader *nir,
-                             bool use_legacy_snorm_formula,
                              const uint8_t *vs_attrib_wa_flags);
 void brw_nir_lower_vue_inputs(nir_shader *nir,
                               const struct brw_vue_map *vue_map);
@@ -106,18 +109,16 @@ void brw_nir_lower_tes_inputs(nir_shader *nir, const struct brw_vue_map *vue);
 void brw_nir_lower_fs_inputs(nir_shader *nir,
                              const struct gen_device_info *devinfo,
                              const struct brw_wm_prog_key *key);
-void brw_nir_lower_vue_outputs(nir_shader *nir, bool is_scalar);
+void brw_nir_lower_vue_outputs(nir_shader *nir);
 void brw_nir_lower_tcs_outputs(nir_shader *nir, const struct brw_vue_map *vue,
                                GLenum tes_primitive_mode);
 void brw_nir_lower_fs_outputs(nir_shader *nir);
-void brw_nir_lower_cs_shared(nir_shader *nir);
 
 nir_shader *brw_postprocess_nir(nir_shader *nir,
                                 const struct brw_compiler *compiler,
                                 bool is_scalar);
 
 bool brw_nir_apply_attribute_workarounds(nir_shader *nir,
-                                         bool use_legacy_snorm_formula,
                                          const uint8_t *attrib_wa_flags);
 
 bool brw_nir_apply_trig_workarounds(nir_shader *nir);
@@ -145,6 +146,7 @@ void brw_nir_setup_arb_uniforms(void *mem_ctx, nir_shader *shader,
 
 void brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
                                 nir_shader *nir,
+                                const struct brw_vs_prog_key *vs_key,
                                 struct brw_ubo_range out_ranges[4]);
 
 bool brw_nir_opt_peephole_ffma(nir_shader *shader);

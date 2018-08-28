@@ -474,7 +474,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       prog_data->base.base.dispatch_grf_start_reg = v.payload.num_regs;
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
-      fs_generator g(compiler, log_data, mem_ctx, (void *) key,
+      fs_generator g(compiler, log_data, mem_ctx,
                      &prog_data->base.base, v.promoted_constants, false,
                      MESA_SHADER_TESS_CTRL);
       if (unlikely(INTEL_DEBUG & DEBUG_TCS)) {
@@ -487,7 +487,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
       g.generate_code(v.cfg, 8);
 
-      assembly = g.get_assembly(&prog_data->base.base.program_size);
+      assembly = g.get_assembly();
    } else {
       vec4_tcs_visitor v(compiler, log_data, key, prog_data,
                          nir, mem_ctx, shader_time_index, &input_vue_map);
@@ -502,8 +502,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
 
       assembly = brw_vec4_generate_assembly(compiler, log_data, mem_ctx, nir,
-                                            &prog_data->base, v.cfg,
-                                            &prog_data->base.base.program_size);
+                                            &prog_data->base, v.cfg);
    }
 
    return assembly;

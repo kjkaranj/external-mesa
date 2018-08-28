@@ -37,6 +37,7 @@ files_mesa_util = files(
   'format_r11g11b10f.h',
   'format_rgb9e5.h',
   'format_srgb.h',
+  'futex.h',
   'half_float.c',
   'half_float.h',
   'hash_table.c',
@@ -45,12 +46,18 @@ files_mesa_util = files(
   'macros.h',
   'mesa-sha1.c',
   'mesa-sha1.h',
+  'os_time.c',
+  'os_time.h',
+  'u_process.c',
+  'u_process.h',
   'sha1/sha1.c',
   'sha1/sha1.h',
   'ralloc.c',
   'ralloc.h',
   'rand_xor.c',
   'rand_xor.h',
+  'rb_tree.c',
+  'rb_tree.h',
   'register_allocate.c',
   'register_allocate.h',
   'rgtc.c',
@@ -59,6 +66,7 @@ files_mesa_util = files(
   'set.c',
   'set.h',
   'simple_list.h',
+  'simple_mtx.h',
   'slab.c',
   'slab.h',
   'string_buffer.c',
@@ -77,9 +85,11 @@ files_mesa_util = files(
   'u_thread.h',
   'u_vector.c',
   'u_vector.h',
+  'vma.c',
+  'vma.h',
 )
 
-install_data('drirc', install_dir : get_option('sysconfdir'))
+install_data('00-mesa-defaults.conf', install_dir : join_paths(get_option('datadir'), 'drirc.d'))
 
 files_xmlconfig = files(
   'xmlconfig.c',
@@ -90,7 +100,7 @@ format_srgb = custom_target(
   'format_srgb',
   input : ['format_srgb.py'],
   output : 'format_srgb.c',
-  command : [prog_python2, '@INPUT0@'],
+  command : [prog_python, '@INPUT0@'],
   capture : true,
 )
 
@@ -98,7 +108,7 @@ libmesa_util = static_library(
   'mesa_util',
   [files_mesa_util, format_srgb],
   include_directories : inc_common,
-  dependencies : [dep_zlib, dep_clock],
+  dependencies : [dep_zlib, dep_clock, dep_thread, dep_atomic],
   c_args : [c_msvc_compat_args, c_vis_args],
   build_by_default : false
 )
@@ -108,31 +118,54 @@ libxmlconfig = static_library(
   files_xmlconfig,
   include_directories : inc_common,
   dependencies : [dep_expat, dep_m],
-  c_args : [c_msvc_compat_args, c_vis_args,
-            '-DSYSCONFDIR="@0@"'.format(get_option('sysconfdir'))],
+  c_args : [
+    c_msvc_compat_args, c_vis_args,
+    '-DSYSCONFDIR="@0@"'.format(
+      join_paths(get_option('prefix'), get_option('sysconfdir'))
+    ),
+    '-DDATADIR="@0@"'.format(
+      join_paths(get_option('prefix'), get_option('datadir'))
+    ),
+  ],
   build_by_default : false,
 )
 
 if with_tests
-  u_atomic_test = executable(
-    'u_atomic_test',
-    files('u_atomic_test.c'),
-    include_directories : inc_common,
-    link_with : libmesa_util,
-    c_args : [c_msvc_compat_args],
+  test(
+    'u_atomic',
+    executable(
+      'u_atomic_test',
+      files('u_atomic_test.c'),
+      include_directories : inc_common,
+      link_with : libmesa_util,
+      c_args : [c_msvc_compat_args],
+    )
   )
 
-  roundeven_test = executable(
-    'roundeven_test',
-    files('roundeven_test.c'),
-    include_directories : inc_common,
-    c_args : [c_msvc_compat_args],
-    dependencies : [dep_m],
+  test(
+    'roundeven',
+    executable(
+      'roundeven_test',
+      files('roundeven_test.c'),
+      include_directories : inc_common,
+      c_args : [c_msvc_compat_args],
+      dependencies : [dep_m],
+    )
   )
 
-  test('u_atomic', u_atomic_test)
-  test('roundeven', roundeven_test)
+  test(
+    'mesa-sha1',
+    executable(
+      'mesa-sha1_test',
+      files('mesa-sha1_test.c'),
+      include_directories : inc_common,
+      link_with : libmesa_util,
+      c_args : [c_msvc_compat_args],
+    )
+  )
 
   subdir('tests/hash_table')
   subdir('tests/string_buffer')
+  subdir('tests/vma')
+  subdir('tests/set')
 endif

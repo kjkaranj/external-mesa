@@ -1,5 +1,6 @@
 /*
  * Copyright 2012 Advanced Micro Devices, Inc.
+ * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -133,49 +134,62 @@
 #include <llvm-c/Core.h> /* LLVMModuleRef */
 #include <llvm-c/TargetMachine.h>
 #include "tgsi/tgsi_scan.h"
+#include "util/u_inlines.h"
 #include "util/u_queue.h"
 
 #include "ac_binary.h"
-#include "si_state.h"
+#include "ac_llvm_build.h"
+#include "ac_llvm_util.h"
+
+#include <stdio.h>
 
 struct nir_shader;
+struct si_shader;
+struct si_context;
 
+#define SI_MAX_ATTRIBS		16
 #define SI_MAX_VS_OUTPUTS	40
 
 /* Shader IO unique indices are supported for TGSI_SEMANTIC_GENERIC with an
  * index smaller than this.
  */
-#define SI_MAX_IO_GENERIC       46
+#define SI_MAX_IO_GENERIC       43
 
 /* SGPR user data indices */
 enum {
-	/* GFX9 merged shaders have RW_BUFFERS among the first 8 system SGPRs,
-	 * and these two are used for other purposes.
-	 */
 	SI_SGPR_RW_BUFFERS,  /* rings (& stream-out, VS only) */
+#if !HAVE_32BIT_POINTERS
 	SI_SGPR_RW_BUFFERS_HI,
+#endif
 	SI_SGPR_BINDLESS_SAMPLERS_AND_IMAGES,
+#if !HAVE_32BIT_POINTERS
 	SI_SGPR_BINDLESS_SAMPLERS_AND_IMAGES_HI,
+#endif
 	SI_SGPR_CONST_AND_SHADER_BUFFERS, /* or just a constant buffer 0 pointer */
+#if !HAVE_32BIT_POINTERS
 	SI_SGPR_CONST_AND_SHADER_BUFFERS_HI,
+#endif
 	SI_SGPR_SAMPLERS_AND_IMAGES,
+#if !HAVE_32BIT_POINTERS
 	SI_SGPR_SAMPLERS_AND_IMAGES_HI,
+#endif
 	SI_NUM_RESOURCE_SGPRS,
 
+	/* API VS, TES without GS, GS copy shader */
+	SI_SGPR_VS_STATE_BITS = SI_NUM_RESOURCE_SGPRS,
+	SI_NUM_VS_STATE_RESOURCE_SGPRS,
+
 	/* all VS variants */
-	SI_SGPR_VERTEX_BUFFERS	= SI_NUM_RESOURCE_SGPRS,
-	SI_SGPR_VERTEX_BUFFERS_HI,
-	SI_SGPR_BASE_VERTEX,
+	SI_SGPR_BASE_VERTEX = SI_NUM_VS_STATE_RESOURCE_SGPRS,
 	SI_SGPR_START_INSTANCE,
 	SI_SGPR_DRAWID,
-	SI_SGPR_VS_STATE_BITS,
 	SI_VS_NUM_USER_SGPR,
 
 	SI_SGPR_VS_BLIT_DATA = SI_SGPR_CONST_AND_SHADER_BUFFERS,
 
 	/* TES */
-	SI_SGPR_TES_OFFCHIP_LAYOUT = SI_NUM_RESOURCE_SGPRS,
-	SI_SGPR_TES_OFFCHIP_ADDR_BASE64K,
+	SI_SGPR_TES_OFFCHIP_LAYOUT = SI_NUM_VS_STATE_RESOURCE_SGPRS,
+	SI_SGPR_TES_OFFCHIP_ADDR,
 	SI_TES_NUM_USER_SGPR,
 
 	/* GFX6-8: TCS only */
@@ -183,33 +197,39 @@ enum {
 	GFX6_SGPR_TCS_OUT_OFFSETS,
 	GFX6_SGPR_TCS_OUT_LAYOUT,
 	GFX6_SGPR_TCS_IN_LAYOUT,
-	GFX6_SGPR_TCS_OFFCHIP_ADDR_BASE64K,
-	GFX6_SGPR_TCS_FACTOR_ADDR_BASE64K,
 	GFX6_TCS_NUM_USER_SGPR,
 
+	/* GFX9: Merged shaders. */
+#if HAVE_32BIT_POINTERS
+	/* 2ND_CONST_AND_SHADER_BUFFERS is set in USER_DATA_ADDR_LO (SGPR0). */
+	/* 2ND_SAMPLERS_AND_IMAGES is set in USER_DATA_ADDR_HI (SGPR1). */
+	GFX9_MERGED_NUM_USER_SGPR = SI_VS_NUM_USER_SGPR,
+#else
+	/* 2ND_CONST_AND_SHADER_BUFFERS is set in USER_DATA_ADDR_LO/HI (SGPR[0:1]). */
+	GFX9_SGPR_2ND_SAMPLERS_AND_IMAGES = SI_VS_NUM_USER_SGPR,
+	GFX9_SGPR_2ND_SAMPLERS_AND_IMAGES_HI,
+	GFX9_MERGED_NUM_USER_SGPR,
+#endif
+
 	/* GFX9: Merged LS-HS (VS-TCS) only. */
-	GFX9_SGPR_TCS_OFFCHIP_LAYOUT = SI_VS_NUM_USER_SGPR,
+	GFX9_SGPR_TCS_OFFCHIP_LAYOUT = GFX9_MERGED_NUM_USER_SGPR,
 	GFX9_SGPR_TCS_OUT_OFFSETS,
 	GFX9_SGPR_TCS_OUT_LAYOUT,
-	GFX9_SGPR_TCS_OFFCHIP_ADDR_BASE64K,
-	GFX9_SGPR_TCS_FACTOR_ADDR_BASE64K,
-	GFX9_SGPR_unused_to_align_the_next_pointer,
-	GFX9_SGPR_TCS_CONST_AND_SHADER_BUFFERS,
-	GFX9_SGPR_TCS_CONST_AND_SHADER_BUFFERS_HI,
-	GFX9_SGPR_TCS_SAMPLERS_AND_IMAGES,
-	GFX9_SGPR_TCS_SAMPLERS_AND_IMAGES_HI,
+#if !HAVE_32BIT_POINTERS
+	GFX9_SGPR_align_for_vb_pointer,
+#endif
 	GFX9_TCS_NUM_USER_SGPR,
-
-	/* GFX9: Merged ES-GS (VS-GS or TES-GS). */
-	GFX9_SGPR_GS_CONST_AND_SHADER_BUFFERS = SI_VS_NUM_USER_SGPR,
-	GFX9_SGPR_GS_CONST_AND_SHADER_BUFFERS_HI,
-	GFX9_SGPR_GS_SAMPLERS_AND_IMAGES,
-	GFX9_SGPR_GS_SAMPLERS_AND_IMAGES_HI,
-	GFX9_GS_NUM_USER_SGPR,
 
 	/* GS limits */
 	GFX6_GS_NUM_USER_SGPR = SI_NUM_RESOURCE_SGPRS,
-	SI_GSCOPY_NUM_USER_SGPR = SI_SGPR_RW_BUFFERS_HI + 1,
+#if HAVE_32BIT_POINTERS
+	GFX9_VSGS_NUM_USER_SGPR = SI_VS_NUM_USER_SGPR,
+	GFX9_TESGS_NUM_USER_SGPR = SI_TES_NUM_USER_SGPR,
+#else
+	GFX9_VSGS_NUM_USER_SGPR = GFX9_MERGED_NUM_USER_SGPR,
+	GFX9_TESGS_NUM_USER_SGPR = GFX9_MERGED_NUM_USER_SGPR,
+#endif
+	SI_GSCOPY_NUM_USER_SGPR = SI_NUM_VS_STATE_RESOURCE_SGPRS,
 
 	/* PS only */
 	SI_SGPR_ALPHA_REF	= SI_NUM_RESOURCE_SGPRS,
@@ -261,6 +281,9 @@ enum {
 };
 
 enum {
+	/* Use a property enum that CS wouldn't use. */
+	TGSI_PROPERTY_CS_LOCAL_SIZE = TGSI_PROPERTY_FS_COORD_ORIGIN,
+
 	/* Use a property enum that VS wouldn't use. */
 	TGSI_PROPERTY_VS_BLIT_SGPRS = TGSI_PROPERTY_FS_COORD_ORIGIN,
 
@@ -299,7 +322,7 @@ struct si_shader;
 struct si_compiler_ctx_state {
 	/* Should only be used by si_init_shader_selector_async and
 	 * si_build_shader_variant if thread_index == -1 (non-threaded). */
-	LLVMTargetMachineRef		tm;
+	struct ac_llvm_compiler		*compiler;
 
 	/* Used if thread_index == -1 or if debug.async is true. */
 	struct pipe_debug_callback	debug;
@@ -344,8 +367,11 @@ struct si_shader_selector {
 	ubyte		clipdist_mask;
 	ubyte		culldist_mask;
 
+	/* ES parameters. */
+	unsigned	esgs_itemsize; /* vertex stride */
+	unsigned	lshs_vertex_stride;
+
 	/* GS parameters. */
-	unsigned	esgs_itemsize;
 	unsigned	gs_input_verts_per_prim;
 	unsigned	gs_output_prim;
 	unsigned	gs_max_out_vertices;
@@ -363,9 +389,7 @@ struct si_shader_selector {
 	 */
 	unsigned	colors_written_4bit;
 
-	/* CS parameters */
-	unsigned local_size;
-
+	uint64_t	outputs_written_before_ps; /* "get_unique_index" bits */
 	uint64_t	outputs_written;	/* "get_unique_index" bits */
 	uint32_t	patch_outputs_written;	/* "get_unique_index_patch" bits */
 
@@ -419,6 +443,7 @@ struct si_tcs_epilog_bits {
 
 struct si_gs_prolog_bits {
 	unsigned	tri_strip_adj_fix:1;
+	unsigned	gfx9_prev_is_vs:1;
 };
 
 /* Common PS bits between the shader key and the prolog key. */
@@ -455,6 +480,7 @@ union si_shader_part_key {
 		unsigned	num_merged_next_stage_vgprs:3;
 		unsigned	last_input:4;
 		unsigned	as_ls:1;
+		unsigned	as_es:1;
 		/* Prologs for monolithic shaders shouldn't set EXEC. */
 		unsigned	is_monolithic:1;
 	} vs_prolog;
@@ -477,7 +503,7 @@ union si_shader_part_key {
 		unsigned	ancillary_vgpr_index:5;
 		unsigned	wqm:1;
 		char		color_attr_index[2];
-		char		color_interp_vgpr_index[2]; /* -1 == constant */
+		signed char	color_interp_vgpr_index[2]; /* -1 == constant */
 	} ps_prolog;
 	struct {
 		struct si_ps_epilog_bits states;
@@ -527,6 +553,9 @@ struct si_shader_key {
 			unsigned	vs_export_prim_id:1;
 			struct {
 				unsigned interpolate_at_sample_force_center:1;
+				unsigned fbfetch_msaa;
+				unsigned fbfetch_is_1D;
+				unsigned fbfetch_layered;
 			} ps;
 		} u;
 	} mono;
@@ -557,6 +586,7 @@ struct si_shader_config {
 	unsigned			spilled_vgprs;
 	unsigned			private_mem_vgprs;
 	unsigned			lds_size;
+	unsigned			max_simd_waves;
 	unsigned			spi_ps_input_ena;
 	unsigned			spi_ps_input_addr;
 	unsigned			float_mode;
@@ -593,7 +623,7 @@ struct si_shader {
 	struct r600_resource		*bo;
 	struct r600_resource		*scratch_bo;
 	struct si_shader_key		key;
-	struct util_queue_fence		optimized_ready;
+	struct util_queue_fence		ready;
 	bool				compilation_failed;
 	bool				is_monolithic;
 	bool				is_optimized;
@@ -622,24 +652,26 @@ struct si_shader_part {
 /* si_shader.c */
 struct si_shader *
 si_generate_gs_copy_shader(struct si_screen *sscreen,
-			   LLVMTargetMachineRef tm,
+			   struct ac_llvm_compiler *compiler,
 			   struct si_shader_selector *gs_selector,
 			   struct pipe_debug_callback *debug);
 int si_compile_tgsi_shader(struct si_screen *sscreen,
-			   LLVMTargetMachineRef tm,
+			   struct ac_llvm_compiler *compiler,
 			   struct si_shader *shader,
-			   bool is_monolithic,
 			   struct pipe_debug_callback *debug);
-int si_shader_create(struct si_screen *sscreen, LLVMTargetMachineRef tm,
+int si_shader_create(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
 		     struct si_shader *shader,
 		     struct pipe_debug_callback *debug);
 void si_shader_destroy(struct si_shader *shader);
 unsigned si_shader_io_get_unique_index_patch(unsigned semantic_name, unsigned index);
-unsigned si_shader_io_get_unique_index(unsigned semantic_name, unsigned index);
+unsigned si_shader_io_get_unique_index(unsigned semantic_name, unsigned index,
+				       unsigned is_varying);
 int si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader);
 void si_shader_dump(struct si_screen *sscreen, const struct si_shader *shader,
 		    struct pipe_debug_callback *debug, unsigned processor,
 		    FILE *f, bool check_debug_option);
+void si_shader_dump_stats_for_shader_db(const struct si_shader *shader,
+					struct pipe_debug_callback *debug);
 void si_multiwave_lds_size_workaround(struct si_screen *sscreen,
 				      unsigned *lds_size);
 void si_shader_apply_scratch_relocs(struct si_shader *shader,
@@ -647,13 +679,14 @@ void si_shader_apply_scratch_relocs(struct si_shader *shader,
 void si_shader_binary_read_config(struct ac_shader_binary *binary,
 				  struct si_shader_config *conf,
 				  unsigned symbol_offset);
-unsigned si_get_spi_shader_z_format(bool writes_z, bool writes_stencil,
-				    bool writes_samplemask);
 const char *si_get_shader_name(const struct si_shader *shader, unsigned processor);
 
 /* si_shader_nir.c */
 void si_nir_scan_shader(const struct nir_shader *nir,
 			struct tgsi_shader_info *info);
+void si_nir_scan_tess_ctrl(const struct nir_shader *nir,
+			   const struct tgsi_shader_info *info,
+			   struct tgsi_tessctrl_info *out);
 void si_lower_nir(struct si_shader_selector *sel);
 
 /* Inline helpers. */

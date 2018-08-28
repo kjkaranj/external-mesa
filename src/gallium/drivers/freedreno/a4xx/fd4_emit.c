@@ -190,6 +190,8 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			OUT_RING(ring, view->texconst3);
 			if (view->base.texture) {
 				struct fd_resource *rsc = fd_resource(view->base.texture);
+				if (view->base.format == PIPE_FORMAT_X32_S8X24_UINT)
+					rsc = rsc->stencil;
 				OUT_RELOC(ring, rsc->bo, view->offset, view->texconst4, 0);
 			} else {
 				OUT_RING(ring, 0x00000000);
@@ -296,7 +298,7 @@ fd4_emit_gmem_restore_tex(struct fd_ringbuffer *ring, unsigned nr_bufs,
 			 */
 			if (rsc->stencil && (i == 0)) {
 				rsc = rsc->stencil;
-				format = fd_gmem_restore_format(rsc->base.b.format);
+				format = fd_gmem_restore_format(rsc->base.format);
 			}
 
 			/* note: PIPE_BUFFER disallowed for surfaces */
@@ -376,7 +378,7 @@ fd4_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd4_emit *emit)
 			continue;
 		if (vp->inputs[i].sysval) {
 			switch(vp->inputs[i].slot) {
-			case SYSTEM_VALUE_BASE_VERTEX:
+			case SYSTEM_VALUE_FIRST_VERTEX:
 				/* handled elsewhere */
 				break;
 			case SYSTEM_VALUE_VERTEX_ID_ZERO_BASE:
@@ -415,6 +417,13 @@ fd4_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd4_emit *emit)
 			uint32_t off = vb->buffer_offset + elem->src_offset;
 			uint32_t size = fd_bo_size(rsc->bo) - off;
 			debug_assert(fmt != ~0);
+
+#ifdef DEBUG
+			/* see dEQP-GLES31.stress.vertex_attribute_binding.buffer_bounds.bind_vertex_buffer_offset_near_wrap_10
+			 */
+			if (off > fd_bo_size(rsc->bo))
+				continue;
+#endif
 
 			OUT_PKT0(ring, REG_A4XX_VFD_FETCH(j), 4);
 			OUT_RING(ring, A4XX_VFD_FETCH_INSTR_0_FETCHSIZE(fs - 1) |
@@ -910,6 +919,26 @@ fd4_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
 	__OUT_IB(ring, true, target);
 }
 
+static void
+fd4_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
+		unsigned dst_off, struct pipe_resource *src, unsigned src_off,
+		unsigned sizedwords)
+{
+	struct fd_bo *src_bo = fd_resource(src)->bo;
+	struct fd_bo *dst_bo = fd_resource(dst)->bo;
+	unsigned i;
+
+	for (i = 0; i < sizedwords; i++) {
+		OUT_PKT3(ring, CP_MEM_TO_MEM, 3);
+		OUT_RING(ring, 0x00000000);
+		OUT_RELOCW(ring, dst_bo, dst_off, 0, 0);
+		OUT_RELOC (ring, src_bo, src_off, 0, 0);
+
+		dst_off += 4;
+		src_off += 4;
+	}
+}
+
 void
 fd4_emit_init(struct pipe_context *pctx)
 {
@@ -917,4 +946,5 @@ fd4_emit_init(struct pipe_context *pctx)
 	ctx->emit_const = fd4_emit_const;
 	ctx->emit_const_bo = fd4_emit_const_bo;
 	ctx->emit_ib = fd4_emit_ib;
+	ctx->mem_to_mem = fd4_mem_to_mem;
 }

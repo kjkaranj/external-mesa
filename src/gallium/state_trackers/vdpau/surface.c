@@ -369,8 +369,10 @@ vlVdpVideoSurfacePutBitsYCbCr(VdpVideoSurface surface,
       if (pformat == PIPE_FORMAT_YV12 &&
           p_surf->video_buffer->buffer_format == PIPE_FORMAT_NV12)
          conversion = CONVERSION_YV12_TO_NV12;
-      else
+      else {
+         mtx_unlock(&p_surf->device->mutex);
          return VDP_STATUS_NO_IMPLEMENTATION;
+      }
    }
 
    sampler_views = p_surf->video_buffer->get_sampler_view_planes(p_surf->video_buffer);
@@ -524,7 +526,7 @@ VdpStatus vlVdpVideoSurfaceDMABuf(VdpVideoSurface surface,
    }
 
    memset(&whandle, 0, sizeof(struct winsys_handle));
-   whandle.type = DRM_API_HANDLE_TYPE_FD;
+   whandle.type = WINSYS_HANDLE_TYPE_FD;
    whandle.layer = surf->u.tex.first_layer;
 
    pscreen = surf->texture->screen;

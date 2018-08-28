@@ -46,7 +46,11 @@
 #include "texstore.h"
 #include "transformfeedback.h"
 #include "varray.h"
+#include "util/u_atomic.h"
 
+#ifdef MESA_BBOX_OPT
+#include "vbo/vbo_bbox.h"
+#endif
 
 /* Debug flags */
 /*#define VBO_DEBUG*/
@@ -128,8 +132,7 @@ get_buffer_target(struct gl_context *ctx, GLenum target)
          return &ctx->QueryBuffer;
       break;
    case GL_DRAW_INDIRECT_BUFFER:
-      if ((ctx->API == API_OPENGL_CORE &&
-           ctx->Extensions.ARB_draw_indirect) ||
+      if ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_draw_indirect) ||
            _mesa_is_gles31(ctx)) {
          return &ctx->DrawIndirectBuffer;
       }
@@ -471,7 +474,7 @@ _mesa_delete_buffer_object(struct gl_context *ctx,
    bufObj->RefCount = -1000;
    bufObj->Name = ~0;
 
-   mtx_destroy(&bufObj->Mutex);
+   simple_mtx_destroy(&bufObj->MinMaxCacheMutex);
    free(bufObj->Label);
    free(bufObj);
 }
@@ -490,16 +493,9 @@ _mesa_reference_buffer_object_(struct gl_context *ctx,
 {
    if (*ptr) {
       /* Unreference the old buffer */
-      GLboolean deleteFlag = GL_FALSE;
       struct gl_buffer_object *oldObj = *ptr;
 
-      mtx_lock(&oldObj->Mutex);
-      assert(oldObj->RefCount > 0);
-      oldObj->RefCount--;
-      deleteFlag = (oldObj->RefCount == 0);
-      mtx_unlock(&oldObj->Mutex);
-
-      if (deleteFlag) {
+      if (p_atomic_dec_zero(&oldObj->RefCount)) {
 	 assert(ctx->Driver.DeleteBuffer);
          ctx->Driver.DeleteBuffer(ctx, oldObj);
       }
@@ -510,12 +506,8 @@ _mesa_reference_buffer_object_(struct gl_context *ctx,
 
    if (bufObj) {
       /* reference new buffer */
-      mtx_lock(&bufObj->Mutex);
-      assert(bufObj->RefCount > 0);
-
-      bufObj->RefCount++;
+      p_atomic_inc(&bufObj->RefCount);
       *ptr = bufObj;
-      mtx_unlock(&bufObj->Mutex);
    }
 }
 
@@ -547,11 +539,11 @@ _mesa_initialize_buffer_object(struct gl_context *ctx,
                                GLuint name)
 {
    memset(obj, 0, sizeof(struct gl_buffer_object));
-   mtx_init(&obj->Mutex, mtx_plain);
    obj->RefCount = 1;
    obj->Name = name;
    obj->Usage = GL_STATIC_DRAW_ARB;
 
+   simple_mtx_init(&obj->MinMaxCacheMutex, mtx_plain);
    if (get_no_minmax_cache())
       obj->UsageHistory |= USAGE_DISABLE_MINMAX_CACHE;
 }
@@ -870,7 +862,7 @@ _mesa_init_buffer_objects( struct gl_context *ctx )
    GLuint i;
 
    memset(&DummyBufferObject, 0, sizeof(DummyBufferObject));
-   mtx_init(&DummyBufferObject.Mutex, mtx_plain);
+   simple_mtx_init(&DummyBufferObject.MinMaxCacheMutex, mtx_plain);
    DummyBufferObject.RefCount = 1000*1000*1000; /* never delete */
 
    _mesa_reference_buffer_object(ctx, &ctx->Array.ArrayBufferObj,
@@ -2265,6 +2257,10 @@ buffer_sub_data(GLenum target, GLuint buffer, GLintptr offset,
 
    if (no_error || validate_buffer_sub_data(ctx, bufObj, offset, size, func))
       _mesa_buffer_sub_data(ctx, bufObj, offset, size, data);
+
+#ifdef MESA_BBOX_OPT
+   vbo_bbox_element_buffer_update(ctx,bufObj,data,offset,size);
+#endif
 }
 
 
@@ -2600,9 +2596,17 @@ validate_and_unmap_buffer(struct gl_context *ctx,
 #endif
 
 #ifdef VBO_DEBUG
+#ifdef MESA_BBOX_OPT
+   if (bufObj->StorageFlags & GL_MAP_WRITE_BIT) {
+#else
    if (bufObj->AccessFlags & GL_MAP_WRITE_BIT) {
+#endif
       GLuint i, unchanged = 0;
+#ifdef MESA_BBOX_OPT
+      GLubyte *b = (GLubyte *) bufObj->Data;
+#else
       GLubyte *b = (GLubyte *) bufObj->Pointer;
+#endif
       GLint pos = -1;
       /* check which bytes changed */
       for (i = 0; i < bufObj->Size - 1; i++) {
@@ -3165,7 +3169,11 @@ map_buffer_range(struct gl_context *ctx, struct gl_buffer_object *bufObj,
       /* Access must be write only */
       if ((access & GL_MAP_WRITE_BIT) && (!(access & ~GL_MAP_WRITE_BIT))) {
          GLuint i;
+#ifdef MESA_BBOX_OPT
+         GLubyte *b = (GLubyte *) bufObj->Data;
+#else
          GLubyte *b = (GLubyte *) bufObj->Pointer;
+#endif
          for (i = 0; i < bufObj->Size; i++)
             b[i] = i & 0xff;
       }

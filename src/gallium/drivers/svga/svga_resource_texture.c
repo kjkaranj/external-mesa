@@ -1040,6 +1040,7 @@ svga_texture_create(struct pipe_screen *screen,
       if (screen->is_format_supported(screen, template->format,
                                       template->target,
                                       template->nr_samples,
+                                      template->nr_storage_samples,
                                       PIPE_BIND_SAMPLER_VIEW)) {
          bindings |= PIPE_BIND_SAMPLER_VIEW;
       }
@@ -1054,6 +1055,7 @@ svga_texture_create(struct pipe_screen *screen,
          if (screen->is_format_supported(screen, template->format,
                                          template->target,
                                          template->nr_samples,
+                                         template->nr_storage_samples,
                                          PIPE_BIND_RENDER_TARGET)) {
             bindings |= PIPE_BIND_RENDER_TARGET;
          }
@@ -1064,6 +1066,7 @@ svga_texture_create(struct pipe_screen *screen,
          if (screen->is_format_supported(screen, template->format,
                                          template->target,
                                          template->nr_samples,
+                                         template->nr_storage_samples,
                                          PIPE_BIND_DEPTH_STENCIL)) {
             bindings |= PIPE_BIND_DEPTH_STENCIL;
          }
@@ -1332,7 +1335,7 @@ boolean
 svga_texture_transfer_map_upload_create(struct svga_context *svga)
 {
    svga->tex_upload = u_upload_create(&svga->pipe, TEX_UPLOAD_DEFAULT_SIZE,
-                                      0, PIPE_USAGE_STAGING);
+                                      0, PIPE_USAGE_STAGING, 0);
    return svga->tex_upload != NULL;
 }
 

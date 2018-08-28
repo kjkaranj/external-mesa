@@ -21,7 +21,6 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include "main/core.h"
 #include "ir.h"
 #include "linker.h"
 #include "ir_uniform.h"
@@ -29,6 +28,7 @@
 #include "program.h"
 #include "string_to_uint_map.h"
 #include "ir_array_refcount.h"
+#include "main/mtypes.h"
 
 /**
  * \file link_uniforms.cpp
@@ -132,9 +132,6 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
          const char *field = t->fields.structure[i].name;
          size_t new_length = name_length;
 
-         if (t->fields.structure[i].type->is_record())
-            this->visit_field(&t->fields.structure[i]);
-
          if (t->is_interface() && t->fields.structure[i].offset != -1)
             this->set_buffer_offset(t->fields.structure[i].offset);
 
@@ -213,11 +210,6 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
       this->set_record_array_count(record_array_count);
       this->visit_field(t, *name, row_major, record_type, packing, last_field);
    }
-}
-
-void
-program_resource_visitor::visit_field(const glsl_struct_field *)
-{
 }
 
 void
@@ -405,6 +397,48 @@ private:
 };
 
 } /* anonymous namespace */
+
+unsigned
+link_calculate_matrix_stride(const glsl_type *matrix, bool row_major,
+                             enum glsl_interface_packing packing)
+{
+   const unsigned N = matrix->is_double() ? 8 : 4;
+   const unsigned items =
+      row_major ? matrix->matrix_columns : matrix->vector_elements;
+
+   assert(items <= 4);
+
+   /* Matrix stride for std430 mat2xY matrices are not rounded up to
+    * vec4 size.
+    *
+    * Section 7.6.2.2 "Standard Uniform Block Layout" of the OpenGL 4.3 spec
+    * says:
+    *
+    *    2. If the member is a two- or four-component vector with components
+    *       consuming N basic machine units, the base alignment is 2N or 4N,
+    *       respectively.
+    *    ...
+    *    4. If the member is an array of scalars or vectors, the base
+    *       alignment and array stride are set to match the base alignment of
+    *       a single array element, according to rules (1), (2), and (3), and
+    *       rounded up to the base alignment of a vec4.
+    *    ...
+    *    7. If the member is a row-major matrix with C columns and R rows, the
+    *       matrix is stored identically to an array of R row vectors with C
+    *       components each, according to rule (4).
+    *    ...
+    *
+    *    When using the std430 storage layout, shader storage blocks will be
+    *    laid out in buffer storage identically to uniform and shader storage
+    *    blocks using the std140 layout, except that the base alignment and
+    *    stride of arrays of scalars and vectors in rule 4 and of structures
+    *    in rule 9 are not rounded up a multiple of the base alignment of a
+    *    vec4.
+    */
+   return packing == GLSL_INTERFACE_PACKING_STD430
+      ? (items < 3 ? items * N : glsl_align(items * N, 16))
+      : glsl_align(items * N, 16);
+}
 
 /**
  * Class to help parcel out pieces of backing storage to uniforms
@@ -864,17 +898,10 @@ private:
          }
 
          if (type->without_array()->is_matrix()) {
-            const glsl_type *matrix = type->without_array();
-            const unsigned N = matrix->is_double() ? 8 : 4;
-            const unsigned items =
-               row_major ? matrix->matrix_columns : matrix->vector_elements;
-
-            assert(items <= 4);
-            if (packing == GLSL_INTERFACE_PACKING_STD430)
-               this->uniforms[id].matrix_stride = items < 3 ? items * N :
-                                                    glsl_align(items * N, 16);
-            else
-               this->uniforms[id].matrix_stride = glsl_align(items * N, 16);
+            this->uniforms[id].matrix_stride =
+               link_calculate_matrix_stride(type->without_array(),
+                                            row_major,
+                                            packing);
             this->uniforms[id].row_major = row_major;
          } else {
             this->uniforms[id].matrix_stride = 0;
@@ -1126,38 +1153,6 @@ assign_hidden_uniform_slot_id(const char *name, unsigned hidden_id,
    uniform_size->map->put(hidden_uniform_start + hidden_id, name);
 }
 
-/**
- * Search through the list of empty blocks to find one that fits the current
- * uniform.
- */
-static int
-find_empty_block(struct gl_shader_program *prog,
-                 struct gl_uniform_storage *uniform)
-{
-   const unsigned entries = MAX2(1, uniform->array_elements);
-
-   foreach_list_typed(struct empty_uniform_block, block, link,
-                      &prog->EmptyUniformLocations) {
-      /* Found a block with enough slots to fit the uniform */
-      if (block->slots == entries) {
-         unsigned start = block->start;
-         exec_node_remove(&block->link);
-         ralloc_free(block);
-
-         return start;
-      /* Found a block with more slots than needed. It can still be used. */
-      } else if (block->slots > entries) {
-         unsigned start = block->start;
-         block->start += entries;
-         block->slots -= entries;
-
-         return start;
-      }
-   }
-
-   return -1;
-}
-
 static void
 link_setup_uniform_remap_tables(struct gl_context *ctx,
                                 struct gl_shader_program *prog)
@@ -1212,7 +1207,7 @@ link_setup_uniform_remap_tables(struct gl_context *ctx,
       int chosen_location = -1;
 
       if (empty_locs)
-         chosen_location = find_empty_block(prog, &prog->data->UniformStorage[i]);
+         chosen_location = link_util_find_empty_block(prog, &prog->data->UniformStorage[i]);
 
       /* Add new entries to the total amount of entries. */
       total_entries += entries;
@@ -1333,11 +1328,14 @@ link_assign_uniform_storage(struct gl_context *ctx,
 
    union gl_constant_value *data;
    if (prog->data->UniformStorage == NULL) {
-      prog->data->UniformStorage = rzalloc_array(prog,
+      prog->data->UniformStorage = rzalloc_array(prog->data,
                                                  struct gl_uniform_storage,
                                                  prog->data->NumUniformStorage);
       data = rzalloc_array(prog->data->UniformStorage,
                            union gl_constant_value, num_data_slots);
+      prog->data->UniformDataDefaults =
+         rzalloc_array(prog->data->UniformStorage,
+                       union gl_constant_value, num_data_slots);
    } else {
       data = prog->data->UniformDataSlots;
    }
@@ -1393,19 +1391,11 @@ link_assign_uniform_storage(struct gl_context *ctx,
          }
       }
 
-      STATIC_ASSERT(sizeof(shader->Program->sh.SamplerTargets) ==
-                    sizeof(parcel.targets));
-      memcpy(shader->Program->sh.SamplerTargets,
-             parcel.targets,
-             sizeof(shader->Program->sh.SamplerTargets));
+      STATIC_ASSERT(ARRAY_SIZE(shader->Program->sh.SamplerTargets) ==
+                    ARRAY_SIZE(parcel.targets));
+      for (unsigned j = 0; j < ARRAY_SIZE(parcel.targets); j++)
+         shader->Program->sh.SamplerTargets[j] = parcel.targets[j];
    }
-
-   /* If this is a fallback compile for a cache miss we already have the
-    * correct uniform mappings and we don't want to reinitialise uniforms so
-    * just return now.
-    */
-   if (prog->data->cache_fallback)
-      return;
 
 #ifndef NDEBUG
    for (unsigned i = 0; i < prog->data->NumUniformStorage; i++) {
@@ -1431,11 +1421,9 @@ void
 link_assign_uniform_locations(struct gl_shader_program *prog,
                               struct gl_context *ctx)
 {
-   if (!prog->data->cache_fallback) {
-      ralloc_free(prog->data->UniformStorage);
-      prog->data->UniformStorage = NULL;
-      prog->data->NumUniformStorage = 0;
-   }
+   ralloc_free(prog->data->UniformStorage);
+   prog->data->UniformStorage = NULL;
+   prog->data->NumUniformStorage = 0;
 
    if (prog->UniformHash != NULL) {
       prog->UniformHash->clear();

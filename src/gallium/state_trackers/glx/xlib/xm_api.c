@@ -61,11 +61,15 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
+#include "state_tracker/st_api.h"
 
 #include "util/u_atomic.h"
 #include "util/u_inlines.h"
 
 #include "hud/hud_context.h"
+
+#include "main/errors.h"
+#include "main/imports.h"
 
 #include "xm_public.h"
 #include <GL/glx.h>
@@ -142,8 +146,11 @@ xmesa_close_display(Display *display)
 {
    XMesaExtDisplayInfo *info, *prev;
 
+   /* These assertions are not valid since screen creation can fail and result
+    * in an empty list
    assert(MesaExtInfo.ndisplays > 0);
    assert(MesaExtInfo.head);
+   */
 
    _XLockMutex(_Xglobal_lock);
    /* first find display */
@@ -223,7 +230,30 @@ xmesa_init_display( Display *display )
       return NULL;
    }
    info->display = display;
+
    xmdpy = &info->mesaDisplay; /* to be filled out below */
+   xmdpy->display = display;
+   xmdpy->pipe = NULL;
+
+   xmdpy->smapi = CALLOC_STRUCT(st_manager);
+   if (!xmdpy->smapi) {
+      Xfree(info);
+      mtx_unlock(&init_mutex);
+      return NULL;
+   }
+
+   xmdpy->screen = driver.create_pipe_screen(display);
+   if (!xmdpy->screen) {
+      free(xmdpy->smapi);
+      Xfree(info);
+      mtx_unlock(&init_mutex);
+      return NULL;
+   }
+
+   /* At this point, both smapi and screen are known to be valid */
+   xmdpy->smapi->screen = xmdpy->screen;
+   xmdpy->smapi->get_param = xmesa_get_param;
+   (void) mtx_init(&xmdpy->mutex, mtx_plain);
 
    /* chain to the list of displays */
    _XLockMutex(_Xglobal_lock);
@@ -231,32 +261,6 @@ xmesa_init_display( Display *display )
    MesaExtInfo.head = info;
    MesaExtInfo.ndisplays++;
    _XUnlockMutex(_Xglobal_lock);
-
-   /* now create the new XMesaDisplay info */
-   assert(display);
-
-   xmdpy->display = display;
-   xmdpy->screen = driver.create_pipe_screen(display);
-   xmdpy->smapi = CALLOC_STRUCT(st_manager);
-   xmdpy->pipe = NULL;
-   if (xmdpy->smapi) {
-      xmdpy->smapi->screen = xmdpy->screen;
-      xmdpy->smapi->get_param = xmesa_get_param;
-   }
-
-   if (xmdpy->screen && xmdpy->smapi) {
-      (void) mtx_init(&xmdpy->mutex, mtx_plain);
-   }
-   else {
-      if (xmdpy->screen) {
-         xmdpy->screen->destroy(xmdpy->screen);
-         xmdpy->screen = NULL;
-      }
-      free(xmdpy->smapi);
-      xmdpy->smapi = NULL;
-
-      xmdpy->display = NULL;
-   }
 
    mtx_unlock(&init_mutex);
 
@@ -485,7 +489,7 @@ choose_depth_stencil_format(XMesaDisplay xmdpy, int depth, int stencil,
    for (i = 0; i < count; i++) {
       if (xmdpy->screen->is_format_supported(xmdpy->screen, formats[i],
                                              target, sample_count,
-                                             tex_usage)) {
+                                             sample_count, tex_usage)) {
          fmt = formats[i];
          break;
       }
@@ -888,6 +892,7 @@ XMesaVisual XMesaCreateVisual( Display *display,
    if (!xmdpy->screen->is_format_supported(xmdpy->screen,
                                            v->stvis.color_format,
                                            PIPE_TEXTURE_2D, num_samples,
+                                           num_samples,
                                            PIPE_BIND_RENDER_TARGET))
       v->stvis.color_format = PIPE_FORMAT_NONE;
 
@@ -935,10 +940,10 @@ xmesa_get_name(void)
 /**
  * Do per-display initializations.
  */
-void
+int
 xmesa_init( Display *display )
 {
-   xmesa_init_display(display);
+   return xmesa_init_display(display) ? 0 : 1;
 }
 
 
@@ -1035,7 +1040,7 @@ XMesaContext XMesaCreateContext( XMesaVisual v, XMesaContext share_list,
 
    c->st->st_manager_private = (void *) c;
 
-   c->hud = hud_create(c->st->pipe, c->st->cso_context);
+   c->hud = hud_create(c->st->cso_context, NULL);
 
    return c;
 
@@ -1051,7 +1056,7 @@ PUBLIC
 void XMesaDestroyContext( XMesaContext c )
 {
    if (c->hud) {
-      hud_destroy(c->hud);
+      hud_destroy(c->hud, NULL);
    }
 
    c->st->destroy(c->st);
@@ -1357,7 +1362,7 @@ void XMesaSwapBuffers( XMesaBuffer b )
    if (xmctx && xmctx->hud) {
       struct pipe_resource *back =
          xmesa_get_framebuffer_resource(b->stfb, ST_ATTACHMENT_BACK_LEFT);
-      hud_draw(xmctx->hud, back);
+      hud_run(xmctx->hud, NULL, back);
    }
 
    if (xmctx && xmctx->xm_buffer == b) {

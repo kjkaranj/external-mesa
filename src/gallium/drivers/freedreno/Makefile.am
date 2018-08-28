@@ -22,6 +22,7 @@ libfreedreno_la_SOURCES = \
 	$(a3xx_SOURCES) \
 	$(a4xx_SOURCES) \
 	$(a5xx_SOURCES) \
+	$(a6xx_SOURCES) \
 	$(ir3_SOURCES) \
 	$(ir3_GENERATED_FILES)
 
@@ -45,3 +46,5 @@ ir3_compiler_LDADD = \
 	$(top_builddir)/src/mesa/libmesagallium.la \
 	$(GALLIUM_COMMON_LIB_DEPS) \
 	$(FREEDRENO_LIBS)
+
+EXTRA_DIST += meson.build

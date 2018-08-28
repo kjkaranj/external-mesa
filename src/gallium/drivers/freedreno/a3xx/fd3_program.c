@@ -40,22 +40,13 @@
 #include "fd3_texture.h"
 #include "fd3_format.h"
 
-static void
-delete_shader_stateobj(struct fd3_shader_stateobj *so)
-{
-	ir3_shader_destroy(so->shader);
-	free(so);
-}
-
-static struct fd3_shader_stateobj *
+static struct ir3_shader *
 create_shader_stateobj(struct pipe_context *pctx, const struct pipe_shader_state *cso,
 		enum shader_t type)
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct ir3_compiler *compiler = ctx->screen->compiler;
-	struct fd3_shader_stateobj *so = CALLOC_STRUCT(fd3_shader_stateobj);
-	so->shader = ir3_shader_create(compiler, cso, type, &ctx->debug);
-	return so;
+	return ir3_shader_create(compiler, cso, type, &ctx->debug);
 }
 
 static void *
@@ -68,8 +59,8 @@ fd3_fp_state_create(struct pipe_context *pctx,
 static void
 fd3_fp_state_delete(struct pipe_context *pctx, void *hwcso)
 {
-	struct fd3_shader_stateobj *so = hwcso;
-	delete_shader_stateobj(so);
+	struct ir3_shader *so = hwcso;
+	ir3_shader_destroy(so);
 }
 
 static void *
@@ -82,15 +73,15 @@ fd3_vp_state_create(struct pipe_context *pctx,
 static void
 fd3_vp_state_delete(struct pipe_context *pctx, void *hwcso)
 {
-	struct fd3_shader_stateobj *so = hwcso;
-	delete_shader_stateobj(so);
+	struct ir3_shader *so = hwcso;
+	ir3_shader_destroy(so);
 }
 
 bool
-fd3_needs_manual_clipping(const struct fd3_shader_stateobj *so,
+fd3_needs_manual_clipping(const struct ir3_shader *shader,
 						  const struct pipe_rasterizer_state *rast)
 {
-	uint64_t outputs = ir3_shader_outputs(so->shader);
+	uint64_t outputs = ir3_shader_outputs(shader);
 
 	return (!rast->depth_clip ||
 			util_bitcount(rast->clip_plane_enable) > 6 ||
@@ -149,7 +140,9 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 	const struct ir3_info *vsi, *fsi;
 	enum a3xx_instrbuffermode fpbuffer, vpbuffer;
 	uint32_t fpbuffersz, vpbuffersz, fsoff;
-	uint32_t pos_regid, posz_regid, psize_regid, color_regid[4] = {0};
+	uint32_t pos_regid, posz_regid, psize_regid;
+	uint32_t vcoord_regid, face_regid, coord_regid, zwcoord_regid;
+	uint32_t color_regid[4] = {0};
 	int constmode;
 	int i, j;
 
@@ -217,6 +210,11 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 		color_regid[3] = ir3_find_output_regid(fp, FRAG_RESULT_DATA3);
 	}
 
+	face_regid      = ir3_find_sysval_regid(fp, SYSTEM_VALUE_FRONT_FACE);
+	coord_regid     = ir3_find_sysval_regid(fp, SYSTEM_VALUE_FRAG_COORD);
+	zwcoord_regid   = (coord_regid == regid(63,0)) ? regid(63,0) : (coord_regid + 2);
+	vcoord_regid    = ir3_find_sysval_regid(fp, SYSTEM_VALUE_VARYING_COORD);
+
 	/* adjust regids for alpha output formats. there is no alpha render
 	 * format, so it's just treated like red
 	 */
@@ -239,10 +237,11 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 			A3XX_HLSQ_CONTROL_0_REG_SPCONSTFULLUPDATE);
 	OUT_RING(ring, A3XX_HLSQ_CONTROL_1_REG_VSTHREADSIZE(TWO_QUADS) |
 			A3XX_HLSQ_CONTROL_1_REG_VSSUPERTHREADENABLE |
-			COND(fp->frag_coord, A3XX_HLSQ_CONTROL_1_REG_FRAGCOORDXYREGID(regid(0,0)) |
-					A3XX_HLSQ_CONTROL_1_REG_FRAGCOORDZWREGID(regid(0,2))));
-	OUT_RING(ring, A3XX_HLSQ_CONTROL_2_REG_PRIMALLOCTHRESHOLD(31));
-	OUT_RING(ring, A3XX_HLSQ_CONTROL_3_REG_REGID(fp->pos_regid));
+			A3XX_HLSQ_CONTROL_1_REG_FRAGCOORDXYREGID(coord_regid) |
+			A3XX_HLSQ_CONTROL_1_REG_FRAGCOORDZWREGID(zwcoord_regid));
+	OUT_RING(ring, A3XX_HLSQ_CONTROL_2_REG_PRIMALLOCTHRESHOLD(31) |
+			A3XX_HLSQ_CONTROL_2_REG_FACENESSREGID(face_regid));
+	OUT_RING(ring, A3XX_HLSQ_CONTROL_3_REG_REGID(vcoord_regid));
 	OUT_RING(ring, A3XX_HLSQ_VS_CONTROL_REG_CONSTLENGTH(vp->constlen) |
 			A3XX_HLSQ_VS_CONTROL_REG_CONSTSTARTOFFSET(0) |
 			A3XX_HLSQ_VS_CONTROL_REG_INSTRLENGTH(vpbuffersz));

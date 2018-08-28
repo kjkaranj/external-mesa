@@ -34,7 +34,7 @@ if HAVE_PLATFORM_WAYLAND
 AM_CFLAGS += \
 	$(WAYLAND_SERVER_CFLAGS) \
 	-I$(top_srcdir)/src/egl/wayland/wayland-drm/
-libgbm_la_LIBADD += $(top_builddir)/src/egl/wayland/wayland-drm/libwayland-drm.la $(WAYLAND_SERVER_LIBS)
+libgbm_la_LIBADD += $(WAYLAND_SERVER_LIBS)
 endif
 
 if HAVE_DRI2
@@ -52,6 +52,6 @@ libgbm_la_LIBADD += \
 endif
 
 TESTS = gbm-symbols-check
-EXTRA_DIST = gbm-symbols-check
+EXTRA_DIST = gbm-symbols-check meson.build
 
 include $(top_srcdir)/install-lib-links.mk

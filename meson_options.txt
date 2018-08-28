@@ -1,4 +1,4 @@
-# Copyright © 2017 Intel Corporation
+# Copyright © 2017-2018 Intel Corporation
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,12 @@
 
 option(
   'platforms',
-  type : 'string',
-  value : 'x11,wayland,drm,surfaceless',
-  description : 'comma separated list of window systems to support. wayland, x11, surfaceless, drm, etc.'
+  type : 'array',
+  value : ['auto'],
+  choices : [
+    '', 'auto', 'x11', 'wayland', 'drm', 'surfaceless', 'haiku', 'android',
+  ],
+  description : 'comma separated list of window systems to support. If this is set to auto all platforms applicable to the OS will be enabled.'
 )
 option(
   'dri3',
@@ -33,33 +36,124 @@ option(
 )
 option(
   'dri-drivers',
-  type : 'string',
-  value : 'i915,i965,r100,r200,nouveau',
-  description : 'comma separated list of dri drivers to build.'
+  type : 'array',
+  value : ['auto'],
+  choices : ['', 'auto', 'i915', 'i965', 'r100', 'r200', 'nouveau', 'swrast'],
+  description : 'List of dri drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
 option(
   'dri-drivers-path',
   type : 'string',
   value : '',
-  description : 'Location of dri drivers. Default: $libdir/dri.'
+  description : 'Location to install dri drivers. Default: $libdir/dri.'
+)
+option(
+  'dri-search-path',
+  type : 'string',
+  value : '',
+  description : 'Locations to search for dri drivers, passed as colon separated list. Default: dri-drivers-path.'
 )
 option(
   'gallium-drivers',
-  type : 'string',
-  value : 'pl111,radeonsi,nouveau,freedreno,swrast,vc4,etnaviv,imx',
-  description : 'comma separated list of gallium drivers to build.'
+  type : 'array',
+  value : ['auto'],
+  choices : [
+    '', 'auto', 'pl111', 'radeonsi', 'r300', 'r600', 'nouveau', 'freedreno',
+    'swrast', 'v3d', 'vc4', 'etnaviv', 'imx', 'tegra', 'i915', 'svga', 'virgl',
+    'swr',
+  ],
+  description : 'List of gallium drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
 option(
-  'gallium-media',
+  'gallium-extra-hud',
+  type : 'boolean',
+  value : false,
+  description : 'Enable HUD block/NIC I/O HUD status support',
+)
+option(
+  'gallium-vdpau',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'enable gallium vdpau state tracker.',
+)
+option(
+  'vdpau-libs-path',
   type : 'string',
   value : '',
-  description : 'comma separated list of gallium media APIs to build (omx,va,vdpau,xvmc).'
+  description : 'path to put vdpau libraries. defaults to $libdir/vdpau.'
+)
+option(
+  'gallium-xvmc',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'enable gallium xvmc state tracker.',
+)
+option(
+  'xvmc-libs-path',
+  type : 'string',
+  value : '',
+  description : 'path to put xvmc libraries. defaults to $libdir.'
+)
+option(
+  'gallium-omx',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'disabled', 'bellagio', 'tizonia'],
+  description : 'enable gallium omx state tracker.',
+)
+option(
+  'omx-libs-path',
+  type : 'string',
+  value : '',
+  description : 'path to put omx libraries. defaults to omx-bellagio pkg-config pluginsdir.'
+)
+option(
+  'gallium-va',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'enable gallium va state tracker.',
+)
+option(
+  'va-libs-path',
+  type : 'string',
+  value : '',
+  description : 'path to put va libraries. defaults to $libdir/dri.'
+)
+option(
+  'gallium-xa',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'enable gallium xa state tracker.',
+)
+option(
+  'gallium-nine',
+  type : 'boolean',
+  value : false,
+  description : 'build gallium "nine" Direct3D 9.x state tracker.',
+)
+option(
+  'gallium-opencl',
+  type : 'combo',
+  choices : ['icd', 'standalone', 'disabled'],
+  value : 'disabled',
+  description : 'build gallium "clover" OpenCL state tracker.',
+)
+option(
+  'd3d-drivers-path',
+  type : 'string',
+  value : '',
+  description : 'Location of D3D drivers. Default: $libdir/d3d',
 )
 option(
   'vulkan-drivers',
-  type : 'string',
-  value : 'intel,amd',
-  description : 'comma separated list of vulkan drivers to build.'
+  type : 'array',
+  value : ['auto'],
+  choices : ['', 'auto', 'amd', 'intel'],
+  description : 'List of vulkan drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
 option(
   'shader-cache',
@@ -131,9 +225,16 @@ option(
   description : 'Build assembly code if possible'
 )
 option(
+   'glx-read-only-text',
+   type : 'boolean',
+   value : false,
+   description : 'Disable writable .text section on x86 (decreases performance)'
+)
+option(
   'llvm',
-  type : 'boolean',
-  value : true,
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
   description : 'Build with LLVM support.'
 )
 option(
@@ -151,16 +252,17 @@ option(
   description : 'Use libunwind for stack-traces'
 )
 option(
+  'lmsensors',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'Enable HUD lmsensors support.'
+)
+option(
   'build-tests',
   type : 'boolean',
   value : false,
   description : 'Build unit tests. Currently this will build *all* unit tests, which may build more than expected.'
-)
-option(
-  'texture-float',
-  type : 'boolean',
-  value : false,
-  description : 'Enable floating point textures and renderbuffers. This option may be patent encumbered, please read docs/patents.txt and consult with your lawyer before turning this on.'
 )
 option(
   'selinux',
@@ -181,4 +283,32 @@ option(
   value : '8',
   choices : ['8', '16', '32'],
   description : 'Number of channel bits for OSMesa.'
+)
+option(
+  'swr-arches',
+  type : 'array',
+  value : ['avx', 'avx2'],
+  choices : ['avx', 'avx2', 'knl', 'skx'],
+  description : 'Architectures to build SWR support for.',
+)
+option(
+  'tools',
+  type : 'array',
+  value : [],
+  choices : ['freedreno', 'glsl', 'intel', 'intel-ui', 'nir', 'nouveau', 'xvmc', 'all'],
+  description : 'List of tools to build.',
+)
+option(
+  'power8',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'Enable power8 optimizations.',
+)
+option(
+  'xlib-lease',
+  type : 'combo',
+  value : 'auto',
+  choices : ['auto', 'true', 'false'],
+  description : 'Enable VK_EXT_acquire_xlib_display.'
 )

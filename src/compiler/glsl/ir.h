@@ -33,7 +33,6 @@
 #include "list.h"
 #include "ir_visitor.h"
 #include "ir_hierarchical_visitor.h"
-#include "main/mtypes.h"
 
 #ifdef __cplusplus
 
@@ -397,7 +396,7 @@ depth_layout_string(ir_depth_layout layout);
  * \sa ir_variable::state_slots
  */
 struct ir_state_slot {
-   int tokens[5];
+   gl_state_index16 tokens[STATE_LENGTH];
    int swizzle;
 };
 
@@ -1121,6 +1120,8 @@ enum ir_intrinsic_id {
    ir_intrinsic_memory_barrier_buffer,
    ir_intrinsic_memory_barrier_image,
    ir_intrinsic_memory_barrier_shared,
+   ir_intrinsic_begin_invocation_interlock,
+   ir_intrinsic_end_invocation_interlock,
 
    ir_intrinsic_vote_all,
    ir_intrinsic_vote_any,

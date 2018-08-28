@@ -25,7 +25,7 @@
 #include "ast.h"
 #include "compiler/glsl_types.h"
 #include "ir.h"
-#include "main/core.h" /* for MIN2 */
+#include "main/mtypes.h"
 #include "main/shaderobj.h"
 #include "builtin_functions.h"
 
@@ -227,19 +227,28 @@ verify_parameter_modes(_mesa_glsl_parse_state *state,
             val = ((ir_swizzle *)val)->val;
          }
 
-         while (val->ir_type == ir_type_dereference_array) {
-            val = ((ir_dereference_array *)val)->array;
+         for (;;) {
+            if (val->ir_type == ir_type_dereference_array) {
+               val = ((ir_dereference_array *)val)->array;
+            } else if (val->ir_type == ir_type_dereference_record &&
+                       !state->es_shader) {
+               val = ((ir_dereference_record *)val)->record;
+            } else
+               break;
          }
 
-         if (!val->as_dereference_variable() ||
-             val->variable_referenced()->data.mode != ir_var_shader_in) {
+         ir_variable *var = NULL;
+         if (const ir_dereference_variable *deref_var = val->as_dereference_variable())
+            var = deref_var->variable_referenced();
+
+         if (!var || var->data.mode != ir_var_shader_in) {
             _mesa_glsl_error(&loc, state,
                              "parameter `%s` must be a shader input",
                              formal->name);
             return false;
          }
 
-         val->variable_referenced()->data.must_be_shader_input = 1;
+         var->data.must_be_shader_input = 1;
       }
 
       /* Verify that 'out' and 'inout' actual parameters are lvalues. */
@@ -339,6 +348,49 @@ verify_parameter_modes(_mesa_glsl_parse_state *state,
    return true;
 }
 
+struct copy_index_deref_data {
+   void *mem_ctx;
+   exec_list *before_instructions;
+};
+
+static void
+copy_index_derefs_to_temps(ir_instruction *ir, void *data)
+{
+   struct copy_index_deref_data *d = (struct copy_index_deref_data *)data;
+
+   if (ir->ir_type == ir_type_dereference_array) {
+      ir_dereference_array *a = (ir_dereference_array *) ir;
+      ir = a->array->as_dereference();
+
+      ir_rvalue *idx = a->array_index;
+      if (idx->as_dereference_variable()) {
+         ir_variable *var = idx->variable_referenced();
+
+         /* If the index is read only it cannot change so there is no need
+          * to copy it.
+          */
+         if (var->data.read_only || var->data.memory_read_only)
+            return;
+
+         ir_variable *tmp = new(d->mem_ctx) ir_variable(idx->type, "idx_tmp",
+                                                        ir_var_temporary);
+         d->before_instructions->push_tail(tmp);
+
+         ir_dereference_variable *const deref_tmp_1 =
+            new(d->mem_ctx) ir_dereference_variable(tmp);
+         ir_assignment *const assignment =
+            new(d->mem_ctx) ir_assignment(deref_tmp_1,
+                                          idx->clone(d->mem_ctx, NULL));
+         d->before_instructions->push_tail(assignment);
+
+         /* Replace the array index with a dereference of the new temporary */
+         ir_dereference_variable *const deref_tmp_2 =
+            new(d->mem_ctx) ir_dereference_variable(tmp);
+         a->array_index = deref_tmp_2;
+      }
+   }
+}
+
 static void
 fix_parameter(void *mem_ctx, ir_rvalue *actual, const glsl_type *formal_type,
               exec_list *before_instructions, exec_list *after_instructions,
@@ -352,6 +404,17 @@ fix_parameter(void *mem_ctx, ir_rvalue *actual, const glsl_type *formal_type,
    if (formal_type == actual->type
        && (expr == NULL || expr->operation != ir_binop_vector_extract))
       return;
+
+   /* An array index could also be an out variable so we need to make a copy
+    * of them before the function is called.
+    */
+   if (!actual->as_dereference_variable()) {
+      struct copy_index_deref_data data;
+      data.mem_ctx = mem_ctx;
+      data.before_instructions = before_instructions;
+
+      visit_tree(actual, copy_index_derefs_to_temps, &data);
+   }
 
    /* To convert an out parameter, we need to create a temporary variable to
     * hold the value before conversion, and then perform the conversion after
@@ -520,7 +583,8 @@ generate_call(exec_list *instructions, ir_function_signature *sig,
     * If the function call is a constant expression, don't generate any
     * instructions; just generate an ir_constant.
     */
-   if (state->is_version(120, 100)) {
+   if (state->is_version(120, 100) ||
+       state->ctx->Const.AllowGLSLBuiltinConstantExpression) {
       ir_constant *value = sig->constant_expression_value(ctx,
                                                           actual_parameters,
                                                           NULL);
@@ -667,8 +731,13 @@ generate_array_index(void *mem_ctx, exec_list *instructions,
       ir_variable *sub_var = NULL;
       *function_name = array->primary_expression.identifier;
 
-      match_subroutine_by_name(*function_name, actual_parameters,
-                               state, &sub_var);
+      if (!match_subroutine_by_name(*function_name, actual_parameters,
+                                    state, &sub_var)) {
+         _mesa_glsl_error(&loc, state, "Unknown subroutine `%s'",
+                          *function_name);
+         *function_name = NULL; /* indicate error condition to caller */
+         return NULL;
+      }
 
       ir_rvalue *outer_array_idx = idx->hir(instructions, state);
       return new(mem_ctx) ir_dereference_array(sub_var, outer_array_idx);

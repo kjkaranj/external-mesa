@@ -44,6 +44,8 @@ fd4_context_destroy(struct pipe_context *pctx)
 {
 	struct fd4_context *fd4_ctx = fd4_context(fd_context(pctx));
 
+	fd_context_destroy(pctx);
+
 	fd_bo_del(fd4_ctx->vs_pvt_mem);
 	fd_bo_del(fd4_ctx->fs_pvt_mem);
 	fd_bo_del(fd4_ctx->vsc_size_mem);
@@ -54,7 +56,7 @@ fd4_context_destroy(struct pipe_context *pctx)
 
 	fd_hw_query_fini(pctx);
 
-	fd_context_destroy(pctx);
+	free(fd4_ctx);
 }
 
 static const uint8_t primtypes[] = {
@@ -114,7 +116,7 @@ fd4_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 	fd4_query_context_init(pctx);
 
 	fd4_ctx->border_color_uploader = u_upload_create(pctx, 4096, 0,
-                                                         PIPE_USAGE_STREAM);
+                                                         PIPE_USAGE_STREAM, 0);
 
 	return pctx;
 }

@@ -18,13 +18,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+subdir('gen')
+
 inc_glapi = include_directories('.')
 
 static_glapi_files = []
 static_glapi_args = []
 
-if with_appledri or with_windowsdri
-  static_glapi_files += files('glapi_gentable.c')
+if ['apple', 'windows'].contains(with_dri_platform)
+  static_glapi_files += [glapi_gentable_c, glapitable_h]
 endif
 
 if with_shared_glapi
@@ -62,8 +64,9 @@ else
     static_glapi_files += glapi_x86_s
   elif with_asm_arch == 'x86_64'
     static_glapi_files += glapi_x86_64_s
+  elif with_asm_arch == 'sparc'
+    static_glapi_files += glapi_sparc_s
   endif
-  # TODO: SPARC asm
 endif
 
 libglapi_static = static_library(
@@ -76,12 +79,14 @@ libglapi_static = static_library(
 )
 
 if not with_shared_glapi and with_tests
-  glapi_static_check_table = executable(
+  test(
     'glapi_static_check_table',
-    'tests/check_table.cpp',
-    link_with : [libglapi_static],
-    dependencies : [idep_gtest],
+    executable(
+      'glapi_static_check_table',
+      ['tests/check_table.cpp', glapitable_h],
+      include_directories : [inc_include, inc_src, inc_mesa, inc_mapi],
+      link_with : [libglapi_static],
+      dependencies : [idep_gtest, dep_thread],
+    )
   )
-
-  test('glapi_static_check_table', glapi_static_check_table)
 endif

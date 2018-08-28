@@ -23,7 +23,7 @@
 
 #include <assert.h>
 
-#include "common/gen_device_info.h"
+#include "dev/gen_device_info.h"
 #include "common/gen_sample_positions.h"
 #include "genxml/gen_macros.h"
 
@@ -34,9 +34,6 @@
 #include "main/state.h"
 
 #include "brw_context.h"
-#if GEN_GEN == 6
-#include "brw_defines.h"
-#endif
 #include "brw_draw.h"
 #include "brw_multisample_state.h"
 #include "brw_state.h"
@@ -62,7 +59,7 @@
 UNUSED static void *
 emit_dwords(struct brw_context *brw, unsigned n)
 {
-   intel_batchbuffer_begin(brw, n, RENDER_RING);
+   intel_batchbuffer_begin(brw, n);
    uint32_t *map = brw->batch.map_next;
    brw->batch.map_next += n;
    intel_batchbuffer_advance(brw);
@@ -89,7 +86,7 @@ __gen_combine_address(struct brw_context *brw, void *location,
       return address.offset + delta;
    } else {
       if (GEN_GEN < 6 && brw_ptr_in_state_buffer(batch, location)) {
-         offset = (char *) location - (char *) brw->batch.state_map;
+         offset = (char *) location - (char *) brw->batch.state.map;
          return brw_state_reloc(batch, offset, address.bo,
                                 address.offset + delta,
                                 address.reloc_flags);
@@ -97,14 +94,14 @@ __gen_combine_address(struct brw_context *brw, void *location,
 
       assert(!brw_ptr_in_state_buffer(batch, location));
 
-      offset = (char *) location - (char *) brw->batch.map;
+      offset = (char *) location - (char *) brw->batch.batch.map;
       return brw_batch_reloc(batch, offset, address.bo,
                              address.offset + delta,
                              address.reloc_flags);
    }
 }
 
-static struct brw_address
+UNUSED static struct brw_address
 rw_bo(struct brw_bo *bo, uint32_t offset)
 {
    return (struct brw_address) {
@@ -120,6 +117,26 @@ ro_bo(struct brw_bo *bo, uint32_t offset)
    return (struct brw_address) {
             .bo = bo,
             .offset = offset,
+   };
+}
+
+static struct brw_address
+rw_32_bo(struct brw_bo *bo, uint32_t offset)
+{
+   return (struct brw_address) {
+            .bo = bo,
+            .offset = offset,
+            .reloc_flags = RELOC_WRITE | RELOC_32BIT,
+   };
+}
+
+static struct brw_address
+ro_32_bo(struct brw_bo *bo, uint32_t offset)
+{
+   return (struct brw_address) {
+            .bo = bo,
+            .offset = offset,
+            .reloc_flags = RELOC_32BIT,
    };
 }
 
@@ -141,7 +158,7 @@ KSP(struct brw_context *brw, uint32_t offset)
 }
 #else
 static uint32_t
-KSP(struct brw_context *brw, uint32_t offset)
+KSP(UNUSED struct brw_context *brw, uint32_t offset)
 {
    return offset;
 }
@@ -200,7 +217,7 @@ genX(upload_polygon_stipple)(struct brw_context *brw)
        * to a FBO (i.e. any named frame buffer object), we *don't*
        * need to invert - we already match the layout.
        */
-      if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
+      if (ctx->DrawBuffer->FlipY) {
          for (unsigned i = 0; i < 32; i++)
             poly.PatternRow[i] = ctx->PolygonStipple[31 - i]; /* invert */
       } else {
@@ -240,7 +257,7 @@ genX(upload_polygon_stipple_offset)(struct brw_context *brw)
        * to a user-created FBO then our native pixel coordinate system
        * works just fine, and there's no window system to worry about.
        */
-      if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
+      if (ctx->DrawBuffer->FlipY) {
          poly.PolygonStippleYOffset =
             (32 - (_mesa_geometric_height(ctx->DrawBuffer) & 31)) & 31;
       }
@@ -313,14 +330,22 @@ genX(emit_vertex_buffer_state)(struct brw_context *brw,
                                unsigned buffer_nr,
                                struct brw_bo *bo,
                                unsigned start_offset,
-                               unsigned end_offset,
+                               MAYBE_UNUSED unsigned end_offset,
                                unsigned stride,
-                               unsigned step_rate)
+                               MAYBE_UNUSED unsigned step_rate)
 {
    struct GENX(VERTEX_BUFFER_STATE) buf_state = {
       .VertexBufferIndex = buffer_nr,
       .BufferPitch = stride,
-      .BufferStartingAddress = ro_bo(bo, start_offset),
+
+      /* The VF cache designers apparently cut corners, and made the cache
+       * only consider the bottom 32 bits of memory addresses.  If you happen
+       * to have two vertex buffers which get placed exactly 4 GiB apart and
+       * use them in back-to-back draw calls, you can get collisions.  To work
+       * around this problem, we restrict vertex buffers to the low 32 bits of
+       * the address space.
+       */
+      .BufferStartingAddress = ro_32_bo(bo, start_offset),
 #if GEN_GEN >= 8
       .BufferSize = end_offset - start_offset,
 #endif
@@ -337,7 +362,9 @@ genX(emit_vertex_buffer_state)(struct brw_context *brw,
 #endif
 #endif
 
-#if GEN_GEN == 10
+#if GEN_GEN == 11
+      .VertexBufferMOCS = ICL_MOCS_WB,
+#elif GEN_GEN == 10
       .VertexBufferMOCS = CNL_MOCS_WB,
 #elif GEN_GEN == 9
       .VertexBufferMOCS = SKL_MOCS_WB,
@@ -367,10 +394,14 @@ is_passthru_format(uint32_t format)
 }
 
 UNUSED static int
-uploads_needed(uint32_t format)
+uploads_needed(uint32_t format,
+               bool is_dual_slot)
 {
    if (!is_passthru_format(format))
       return 1;
+
+   if (is_dual_slot)
+      return 2;
 
    switch (format) {
    case ISL_FORMAT_R64_PASSTHRU:
@@ -400,14 +431,22 @@ downsize_format_if_needed(uint32_t format,
    if (!is_passthru_format(format))
       return format;
 
+   /* ISL_FORMAT_R64_PASSTHRU and ISL_FORMAT_R64G64_PASSTHRU with an upload ==
+    * 1 means that we have been forced to do 2 uploads for a size <= 2. This
+    * happens with gen < 8 and dvec3 or dvec4 vertex shader input
+    * variables. In those cases, we return ISL_FORMAT_R32_FLOAT as a way of
+    * flagging that we want to fill with zeroes this second forced upload.
+    */
    switch (format) {
    case ISL_FORMAT_R64_PASSTHRU:
-      return ISL_FORMAT_R32G32_FLOAT;
+      return upload == 0 ? ISL_FORMAT_R32G32_FLOAT
+                         : ISL_FORMAT_R32_FLOAT;
    case ISL_FORMAT_R64G64_PASSTHRU:
-      return ISL_FORMAT_R32G32B32A32_FLOAT;
+      return upload == 0 ? ISL_FORMAT_R32G32B32A32_FLOAT
+                         : ISL_FORMAT_R32_FLOAT;
    case ISL_FORMAT_R64G64B64_PASSTHRU:
-      return !upload ? ISL_FORMAT_R32G32B32A32_FLOAT
-                     : ISL_FORMAT_R32G32_FLOAT;
+      return upload == 0 ? ISL_FORMAT_R32G32B32A32_FLOAT
+                         : ISL_FORMAT_R32G32_FLOAT;
    case ISL_FORMAT_R64G64B64A64_PASSTHRU:
       return ISL_FORMAT_R32G32B32A32_FLOAT;
    default:
@@ -423,6 +462,15 @@ static int
 upload_format_size(uint32_t upload_format)
 {
    switch (upload_format) {
+   case ISL_FORMAT_R32_FLOAT:
+
+      /* downsized_format has returned this one in order to flag that we are
+       * performing a second upload which we want to have filled with
+       * zeroes. This happens with gen < 8, a size <= 2, and dvec3 or dvec4
+       * vertex shader input variables.
+       */
+
+      return 0;
    case ISL_FORMAT_R32G32_FLOAT:
       return 2;
    case ISL_FORMAT_R32G32B32A32_FLOAT:
@@ -430,6 +478,65 @@ upload_format_size(uint32_t upload_format)
    default:
       unreachable("not reached");
    }
+}
+
+static UNUSED uint16_t
+pinned_bo_high_bits(struct brw_bo *bo)
+{
+   return (bo->kflags & EXEC_OBJECT_PINNED) ? bo->gtt_offset >> 32ull : 0;
+}
+
+/* The VF cache designers apparently cut corners, and made the cache key's
+ * <VertexBufferIndex, Memory Address> tuple only consider the bottom 32 bits
+ * of the address.  If you happen to have two vertex buffers which get placed
+ * exactly 4 GiB apart and use them in back-to-back draw calls, you can get
+ * collisions.  (These collisions can happen within a single batch.)
+ *
+ * In the soft-pin world, we'd like to assign addresses up front, and never
+ * move buffers.  So, we need to do a VF cache invalidate if the buffer for
+ * a particular VB slot has different [48:32] address bits than the last one.
+ *
+ * In the relocation world, we have no idea what the addresses will be, so
+ * we can't apply this workaround.  Instead, we tell the kernel to move it
+ * to the low 4GB regardless.
+ */
+static void
+vf_invalidate_for_vb_48bit_transitions(struct brw_context *brw)
+{
+#if GEN_GEN >= 8
+   bool need_invalidate = false;
+   unsigned i;
+
+   for (i = 0; i < brw->vb.nr_buffers; i++) {
+      uint16_t high_bits = pinned_bo_high_bits(brw->vb.buffers[i].bo);
+
+      if (high_bits != brw->vb.last_bo_high_bits[i]) {
+         need_invalidate = true;
+         brw->vb.last_bo_high_bits[i] = high_bits;
+      }
+   }
+
+   /* Don't bother with draw parameter buffers - those are generated by
+    * the driver so we can select a consistent memory zone.
+    */
+
+   if (need_invalidate) {
+      brw_emit_pipe_control_flush(brw, PIPE_CONTROL_VF_CACHE_INVALIDATE);
+   }
+#endif
+}
+
+static void
+vf_invalidate_for_ib_48bit_transition(struct brw_context *brw)
+{
+#if GEN_GEN >= 8
+   uint16_t high_bits = pinned_bo_high_bits(brw->ib.bo);
+
+   if (high_bits != brw->ib.last_bo_high_bits) {
+      brw_emit_pipe_control_flush(brw, PIPE_CONTROL_VF_CACHE_INVALIDATE);
+      brw->ib.last_bo_high_bits = high_bits;
+   }
+#endif
 }
 
 static void
@@ -489,28 +596,22 @@ genX(emit_vertices)(struct brw_context *brw)
    } else {
       brw_batch_emit(brw, GENX(3DSTATE_VF_SGVS), vfs);
    }
+#endif
 
-   /* Normally we don't need an element for the SGVS attribute because the
-    * 3DSTATE_VF_SGVS instruction lets you store the generated attribute in an
-    * element that is past the list in 3DSTATE_VERTEX_ELEMENTS. However if
-    * we're using draw parameters then we need an element for the those
-    * values.  Additionally if there is an edge flag element then the SGVS
-    * can't be inserted past that so we need a dummy element to ensure that
-    * the edge flag is the last one.
-    */
-   const bool needs_sgvs_element = (vs_prog_data->uses_basevertex ||
-                                    vs_prog_data->uses_baseinstance ||
-                                    ((vs_prog_data->uses_instanceid ||
-                                      vs_prog_data->uses_vertexid)
-                                     && uses_edge_flag));
-#else
-   const bool needs_sgvs_element = (vs_prog_data->uses_basevertex ||
-                                    vs_prog_data->uses_baseinstance ||
+   const bool uses_draw_params =
+      vs_prog_data->uses_firstvertex ||
+      vs_prog_data->uses_baseinstance;
+
+   const bool uses_derived_draw_params =
+      vs_prog_data->uses_drawid ||
+      vs_prog_data->uses_is_indexed_draw;
+
+   const bool needs_sgvs_element = (uses_draw_params ||
                                     vs_prog_data->uses_instanceid ||
                                     vs_prog_data->uses_vertexid);
-#endif
+
    unsigned nr_elements =
-      brw->vb.nr_enabled + needs_sgvs_element + vs_prog_data->uses_drawid;
+      brw->vb.nr_enabled + needs_sgvs_element + uses_derived_draw_params;
 
 #if GEN_GEN < 8
    /* If any of the formats of vb.enabled needs more that one upload, we need
@@ -518,9 +619,10 @@ genX(emit_vertices)(struct brw_context *brw)
     */
    for (unsigned i = 0; i < brw->vb.nr_enabled; i++) {
       struct brw_vertex_element *input = brw->vb.enabled[i];
-      uint32_t format = brw_get_vertex_surface_type(brw, input->glarray);
+      const struct gl_array_attributes *glattrib = input->glattrib;
+      uint32_t format = brw_get_vertex_surface_type(brw, glattrib);
 
-      if (uploads_needed(format) > 1)
+      if (uploads_needed(format, input->is_dual_slot) > 1)
          nr_elements++;
    }
 #endif
@@ -537,7 +639,7 @@ genX(emit_vertices)(struct brw_context *brw)
                            1 + GENX(VERTEX_ELEMENT_STATE_length));
       struct GENX(VERTEX_ELEMENT_STATE) elem = {
          .Valid = true,
-         .SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32G32B32A32_FLOAT,
+         .SourceElementFormat = ISL_FORMAT_R32G32B32A32_FLOAT,
          .Component0Control = VFCOMP_STORE_0,
          .Component1Control = VFCOMP_STORE_0,
          .Component2Control = VFCOMP_STORE_0,
@@ -548,11 +650,10 @@ genX(emit_vertices)(struct brw_context *brw)
    }
 
    /* Now emit 3DSTATE_VERTEX_BUFFERS and 3DSTATE_VERTEX_ELEMENTS packets. */
-   const bool uses_draw_params =
-      vs_prog_data->uses_basevertex ||
-      vs_prog_data->uses_baseinstance;
    const unsigned nr_buffers = brw->vb.nr_buffers +
-      uses_draw_params + vs_prog_data->uses_drawid;
+      uses_draw_params + uses_derived_draw_params;
+
+   vf_invalidate_for_vb_48bit_transitions(brw);
 
    if (nr_buffers) {
       assert(nr_buffers <= (GEN_GEN >= 6 ? 33 : 17));
@@ -586,11 +687,11 @@ genX(emit_vertices)(struct brw_context *brw)
                                              0 /* step rate */);
       }
 
-      if (vs_prog_data->uses_drawid) {
+      if (uses_derived_draw_params) {
          dw = genX(emit_vertex_buffer_state)(brw, dw, brw->vb.nr_buffers + 1,
-                                             brw->draw.draw_id_bo,
-                                             brw->draw.draw_id_offset,
-                                             brw->draw.draw_id_bo->size,
+                                             brw->draw.derived_draw_params_bo,
+                                             brw->draw.derived_draw_params_offset,
+                                             brw->draw.derived_draw_params_bo->size,
                                              0 /* stride */,
                                              0 /* step rate */);
       }
@@ -611,12 +712,14 @@ genX(emit_vertices)(struct brw_context *brw)
    unsigned i;
    for (i = 0; i < brw->vb.nr_enabled; i++) {
       const struct brw_vertex_element *input = brw->vb.enabled[i];
-      uint32_t format = brw_get_vertex_surface_type(brw, input->glarray);
+      const struct gl_array_attributes *glattrib = input->glattrib;
+      uint32_t format = brw_get_vertex_surface_type(brw, glattrib);
       uint32_t comp0 = VFCOMP_STORE_SRC;
       uint32_t comp1 = VFCOMP_STORE_SRC;
       uint32_t comp2 = VFCOMP_STORE_SRC;
       uint32_t comp3 = VFCOMP_STORE_SRC;
-      const unsigned num_uploads = GEN_GEN < 8 ? uploads_needed(format) : 1;
+      const unsigned num_uploads = GEN_GEN < 8 ?
+         uploads_needed(format, input->is_dual_slot) : 1;
 
 #if GEN_GEN >= 8
       /* From the BDW PRM, Volume 2d, page 588 (VERTEX_ELEMENT_STATE):
@@ -651,17 +754,18 @@ genX(emit_vertices)(struct brw_context *brw)
           * entry. */
          const unsigned offset = input->offset + c * 16;
 
+         const struct gl_array_attributes *glattrib = input->glattrib;
          const int size = (GEN_GEN < 8 && is_passthru_format(format)) ?
-            upload_format_size(upload_format) : input->glarray->Size;
+            upload_format_size(upload_format) : glattrib->Size;
 
          switch (size) {
             case 0: comp0 = VFCOMP_STORE_0;
             case 1: comp1 = VFCOMP_STORE_0;
             case 2: comp2 = VFCOMP_STORE_0;
             case 3:
-               if (GEN_GEN >= 8 && input->glarray->Doubles) {
+               if (GEN_GEN >= 8 && glattrib->Doubles) {
                   comp3 = VFCOMP_STORE_0;
-               } else if (input->glarray->Integer) {
+               } else if (glattrib->Integer) {
                   comp3 = VFCOMP_STORE_1_INT;
                } else {
                   comp3 = VFCOMP_STORE_1_FP;
@@ -686,7 +790,7 @@ genX(emit_vertices)(struct brw_context *brw)
           *     to be specified as VFCOMP_STORE_0 in order to output a 256-bit
           *     vertex element."
           */
-         if (input->glarray->Doubles && !input->is_dual_slot) {
+         if (glattrib->Doubles && !input->is_dual_slot) {
             /* Store vertex elements which correspond to double and dvec2 vertex
              * shader inputs as 128-bit vertex elements, instead of 256-bits.
              */
@@ -727,21 +831,19 @@ genX(emit_vertices)(struct brw_context *brw)
       };
 
 #if GEN_GEN >= 8
-      if (vs_prog_data->uses_basevertex ||
-          vs_prog_data->uses_baseinstance) {
+      if (uses_draw_params) {
          elem_state.VertexBufferIndex = brw->vb.nr_buffers;
-         elem_state.SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32G32_UINT;
+         elem_state.SourceElementFormat = ISL_FORMAT_R32G32_UINT;
          elem_state.Component0Control = VFCOMP_STORE_SRC;
          elem_state.Component1Control = VFCOMP_STORE_SRC;
       }
 #else
       elem_state.VertexBufferIndex = brw->vb.nr_buffers;
-      elem_state.SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32G32_UINT;
-      if (vs_prog_data->uses_basevertex)
+      elem_state.SourceElementFormat = ISL_FORMAT_R32G32_UINT;
+      if (uses_draw_params) {
          elem_state.Component0Control = VFCOMP_STORE_SRC;
-
-      if (vs_prog_data->uses_baseinstance)
          elem_state.Component1Control = VFCOMP_STORE_SRC;
+      }
 
       if (vs_prog_data->uses_vertexid)
          elem_state.Component2Control = VFCOMP_STORE_VID;
@@ -754,13 +856,13 @@ genX(emit_vertices)(struct brw_context *brw)
       dw += GENX(VERTEX_ELEMENT_STATE_length);
    }
 
-   if (vs_prog_data->uses_drawid) {
+   if (uses_derived_draw_params) {
       struct GENX(VERTEX_ELEMENT_STATE) elem_state = {
          .Valid = true,
          .VertexBufferIndex = brw->vb.nr_buffers + 1,
-         .SourceElementFormat = (enum GENX(SURFACE_FORMAT)) ISL_FORMAT_R32_UINT,
+         .SourceElementFormat = ISL_FORMAT_R32G32_UINT,
          .Component0Control = VFCOMP_STORE_SRC,
-         .Component1Control = VFCOMP_STORE_0,
+         .Component1Control = VFCOMP_STORE_SRC,
          .Component2Control = VFCOMP_STORE_0,
          .Component3Control = VFCOMP_STORE_0,
 #if GEN_GEN < 5
@@ -774,8 +876,8 @@ genX(emit_vertices)(struct brw_context *brw)
 
 #if GEN_GEN >= 6
    if (gen6_edgeflag_input) {
-      const uint32_t format =
-         brw_get_vertex_surface_type(brw, gen6_edgeflag_input->glarray);
+      const struct gl_array_attributes *glattrib = gen6_edgeflag_input->glattrib;
+      const uint32_t format = brw_get_vertex_surface_type(brw, glattrib);
 
       struct GENX(VERTEX_ELEMENT_STATE) elem_state = {
          .Valid = true,
@@ -845,12 +947,22 @@ genX(emit_index_buffer)(struct brw_context *brw)
    if (index_buffer == NULL)
       return;
 
+   vf_invalidate_for_ib_48bit_transition(brw);
+
    brw_batch_emit(brw, GENX(3DSTATE_INDEX_BUFFER), ib) {
 #if GEN_GEN < 8 && !GEN_IS_HASWELL
       ib.CutIndexEnable = brw->prim_restart.enable_cut_index;
 #endif
       ib.IndexFormat = brw_get_index_type(index_buffer->index_size);
-      ib.BufferStartingAddress = ro_bo(brw->ib.bo, 0);
+
+      /* The VF cache designers apparently cut corners, and made the cache
+       * only consider the bottom 32 bits of memory addresses.  If you happen
+       * to have two index buffers which get placed exactly 4 GiB apart and
+       * use them in back-to-back draw calls, you can get collisions.  To work
+       * around this problem, we restrict index buffers to the low 32 bits of
+       * the address space.
+       */
+      ib.BufferStartingAddress = ro_32_bo(brw->ib.bo, 0);
 #if GEN_GEN >= 8
       ib.IndexBufferMOCS = GEN_GEN >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB;
       ib.BufferSize = brw->ib.size;
@@ -1279,7 +1391,7 @@ genX(upload_clip_state)(struct brw_context *brw)
       clip.GuardbandClipTestEnable = true;
 
       clip.ClipperViewportStatePointer =
-         ro_bo(brw->batch.state_bo, brw->clip.vp_offset);
+         ro_bo(brw->batch.state.bo, brw->clip.vp_offset);
 
       clip.ScreenSpaceViewportXMin = -1;
       clip.ScreenSpaceViewportXMax = 1;
@@ -1356,7 +1468,7 @@ genX(upload_clip_state)(struct brw_context *brw)
 #endif
 
 #if GEN_GEN == 7
-      clip.FrontWinding = brw->polygon_front_bit == _mesa_is_user_fbo(fb);
+      clip.FrontWinding = brw->polygon_front_bit != fb->FlipY;
 
       if (ctx->Polygon.CullFlag) {
          switch (ctx->Polygon.CullFaceMode) {
@@ -1471,7 +1583,7 @@ genX(upload_sf)(struct brw_context *brw)
 
 #if GEN_GEN <= 7
    /* _NEW_BUFFERS */
-   bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+   bool flip_y = ctx->DrawBuffer->FlipY;
    UNUSED const bool multisampled_fbo =
       _mesa_geometric_samples(ctx->DrawBuffer) > 1;
 #endif
@@ -1496,7 +1608,7 @@ genX(upload_sf)(struct brw_context *brw)
        * domain.
        */
       sf.SetupViewportStateOffset =
-         ro_bo(brw->batch.state_bo, brw->sf.vp_offset);
+         ro_bo(brw->batch.state.bo, brw->sf.vp_offset);
 
       sf.PointRasterizationRule = RASTRULE_UPPER_RIGHT;
 
@@ -1523,7 +1635,7 @@ genX(upload_sf)(struct brw_context *brw)
 
 #if GEN_GEN <= 7
       /* _NEW_POLYGON */
-      sf.FrontWinding = brw->polygon_front_bit == render_to_fbo;
+      sf.FrontWinding = brw->polygon_front_bit != flip_y;
 #if GEN_GEN >= 6
       sf.GlobalDepthOffsetEnableSolid = ctx->Polygon.OffsetFill;
       sf.GlobalDepthOffsetEnableWireframe = ctx->Polygon.OffsetLine;
@@ -1626,6 +1738,16 @@ genX(upload_sf)(struct brw_context *brw)
          sf.SmoothPointEnable = true;
 #endif
 
+#if GEN_GEN == 10
+      /* _NEW_BUFFERS
+       * Smooth Point Enable bit MUST not be set when NUM_MULTISAMPLES > 1.
+       */
+      const bool multisampled_fbo =
+         _mesa_geometric_samples(ctx->DrawBuffer) > 1;
+      if (multisampled_fbo)
+         sf.SmoothPointEnable = false;
+#endif
+
 #if GEN_IS_G4X || GEN_GEN >= 5
       sf.AALineDistanceMode = AALINEDISTANCE_TRUE;
 #endif
@@ -1651,7 +1773,7 @@ genX(upload_sf)(struct brw_context *brw)
        * Window coordinates in an FBO are inverted, which means point
        * sprite origin must be inverted, too.
        */
-      if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo) {
+      if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) == flip_y) {
          sf.PointSpriteTextureCoordinateOrigin = LOWERLEFT;
       } else {
          sf.PointSpriteTextureCoordinateOrigin = UPPERLEFT;
@@ -1681,7 +1803,8 @@ static const struct brw_tracked_state genX(sf_state) = {
                _NEW_POINT |
                _NEW_PROGRAM |
                (GEN_GEN >= 6 ? _NEW_MULTISAMPLE : 0) |
-               (GEN_GEN <= 7 ? _NEW_BUFFERS | _NEW_POLYGON : 0),
+               (GEN_GEN <= 7 ? _NEW_BUFFERS | _NEW_POLYGON : 0) |
+               (GEN_GEN == 10 ? _NEW_BUFFERS : 0),
       .brw   = BRW_NEW_BLORP |
                BRW_NEW_VUE_MAP_GEOM_OUT |
                (GEN_GEN <= 5 ? BRW_NEW_BATCH |
@@ -1721,10 +1844,7 @@ brw_color_buffer_write_enabled(struct brw_context *brw)
       /* _NEW_COLOR */
       if (rb && (outputs_written & BITFIELD64_BIT(FRAG_RESULT_COLOR) ||
                  outputs_written & BITFIELD64_BIT(FRAG_RESULT_DATA0 + i)) &&
-          (ctx->Color.ColorMask[i][0] ||
-           ctx->Color.ColorMask[i][1] ||
-           ctx->Color.ColorMask[i][2] ||
-           ctx->Color.ColorMask[i][3])) {
+          GET_COLORMASK(ctx->Color.ColorMask, i)) {
          return true;
       }
    }
@@ -1759,47 +1879,100 @@ genX(upload_wm)(struct brw_context *brw)
          /* Pointer to the WM constant buffer.  Covered by the set of
           * state flags from gen6_upload_wm_push_constants.
           */
-         wmcp.PointertoPSConstantBuffer0 = stage_state->push_const_offset;
-         wmcp.PSConstantBuffer0ReadLength = stage_state->push_const_size - 1;
+         wmcp.ConstantBody.PointertoConstantBuffer0 = stage_state->push_const_offset;
+         wmcp.ConstantBody.ConstantBuffer0ReadLength = stage_state->push_const_size - 1;
       }
    }
 #endif
 
 #if GEN_GEN >= 6
    brw_batch_emit(brw, GENX(3DSTATE_WM), wm) {
+#else
+   ctx->NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
+   brw_state_emit(brw, GENX(WM_STATE), 64, &stage_state->state_offset, wm) {
+#endif
+
+#if GEN_GEN <= 6
+      wm._8PixelDispatchEnable = wm_prog_data->dispatch_8;
+      wm._16PixelDispatchEnable = wm_prog_data->dispatch_16;
+      wm._32PixelDispatchEnable = wm_prog_data->dispatch_32;
+#endif
+
+#if GEN_GEN == 4
+      /* On gen4, we only have one shader kernel */
+      if (brw_wm_state_has_ksp(wm, 0)) {
+         assert(brw_wm_prog_data_prog_offset(wm_prog_data, wm, 0) == 0);
+         wm.KernelStartPointer0 = KSP(brw, stage_state->prog_offset);
+         wm.GRFRegisterCount0 = brw_wm_prog_data_reg_blocks(wm_prog_data, wm, 0);
+         wm.DispatchGRFStartRegisterForConstantSetupData0 =
+            brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 0);
+      }
+#elif GEN_GEN == 5
+      /* On gen5, we have multiple shader kernels but only one GRF start
+       * register for all kernels
+       */
+      wm.KernelStartPointer0 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 0);
+      wm.KernelStartPointer1 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 1);
+      wm.KernelStartPointer2 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 2);
+
+      wm.GRFRegisterCount0 = brw_wm_prog_data_reg_blocks(wm_prog_data, wm, 0);
+      wm.GRFRegisterCount1 = brw_wm_prog_data_reg_blocks(wm_prog_data, wm, 1);
+      wm.GRFRegisterCount2 = brw_wm_prog_data_reg_blocks(wm_prog_data, wm, 2);
+
+      wm.DispatchGRFStartRegisterForConstantSetupData0 =
+         wm_prog_data->base.dispatch_grf_start_reg;
+
+      /* Dispatch GRF Start should be the same for all shaders on gen5 */
+      if (brw_wm_state_has_ksp(wm, 1)) {
+         assert(wm_prog_data->base.dispatch_grf_start_reg ==
+                brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 1));
+      }
+      if (brw_wm_state_has_ksp(wm, 2)) {
+         assert(wm_prog_data->base.dispatch_grf_start_reg ==
+                brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 2));
+      }
+#elif GEN_GEN == 6
+      /* On gen6, we have multiple shader kernels and we no longer specify a
+       * register count for each one.
+       */
+      wm.KernelStartPointer0 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 0);
+      wm.KernelStartPointer1 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 1);
+      wm.KernelStartPointer2 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(wm_prog_data, wm, 2);
+
+      wm.DispatchGRFStartRegisterForConstantSetupData0 =
+         brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 0);
+      wm.DispatchGRFStartRegisterForConstantSetupData1 =
+         brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 1);
+      wm.DispatchGRFStartRegisterForConstantSetupData2 =
+         brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, wm, 2);
+#endif
+
+#if GEN_GEN <= 5
+      wm.ConstantURBEntryReadLength = wm_prog_data->base.curb_read_length;
+      /* BRW_NEW_PUSH_CONSTANT_ALLOCATION */
+      wm.ConstantURBEntryReadOffset = brw->curbe.wm_start * 2;
+      wm.SetupURBEntryReadLength = wm_prog_data->num_varying_inputs * 2;
+      wm.SetupURBEntryReadOffset = 0;
+      wm.EarlyDepthTestEnable = true;
+#endif
+
+#if GEN_GEN >= 6
       wm.LineAntialiasingRegionWidth = _10pixels;
       wm.LineEndCapAntialiasingRegionWidth = _05pixels;
 
       wm.PointRasterizationRule = RASTRULE_UPPER_RIGHT;
       wm.BarycentricInterpolationMode = wm_prog_data->barycentric_interp_modes;
 #else
-   ctx->NewDriverState |= BRW_NEW_GEN4_UNIT_STATE;
-   brw_state_emit(brw, GENX(WM_STATE), 64, &stage_state->state_offset, wm) {
-      if (wm_prog_data->dispatch_8 && wm_prog_data->dispatch_16) {
-         /* These two fields should be the same pre-gen6, which is why we
-          * only have one hardware field to program for both dispatch
-          * widths.
-          */
-         assert(wm_prog_data->base.dispatch_grf_start_reg ==
-                wm_prog_data->dispatch_grf_start_reg_2);
-      }
-
-      if (wm_prog_data->dispatch_8 || wm_prog_data->dispatch_16)
-         wm.GRFRegisterCount0 = wm_prog_data->reg_blocks_0;
-
       if (stage_state->sampler_count)
          wm.SamplerStatePointer =
-            ro_bo(brw->batch.state_bo, stage_state->sampler_offset);
-#if GEN_GEN == 5
-      if (wm_prog_data->prog_offset_2)
-         wm.GRFRegisterCount2 = wm_prog_data->reg_blocks_2;
-#endif
+            ro_bo(brw->batch.state.bo, stage_state->sampler_offset);
 
-      wm.SetupURBEntryReadLength = wm_prog_data->num_varying_inputs * 2;
-      wm.ConstantURBEntryReadLength = wm_prog_data->base.curb_read_length;
-      /* BRW_NEW_PUSH_CONSTANT_ALLOCATION */
-      wm.ConstantURBEntryReadOffset = brw->curbe.wm_start * 2;
-      wm.EarlyDepthTestEnable = true;
       wm.LineAntialiasingRegionWidth = _05pixels;
       wm.LineEndCapAntialiasingRegionWidth = _10pixels;
 
@@ -1834,21 +2007,6 @@ genX(upload_wm)(struct brw_context *brw)
       wm.BindingTableEntryCount =
          wm_prog_data->base.binding_table.size_bytes / 4;
       wm.MaximumNumberofThreads = devinfo->max_wm_threads - 1;
-      wm._8PixelDispatchEnable = wm_prog_data->dispatch_8;
-      wm._16PixelDispatchEnable = wm_prog_data->dispatch_16;
-      wm.DispatchGRFStartRegisterForConstantSetupData0 =
-         wm_prog_data->base.dispatch_grf_start_reg;
-      if (GEN_GEN == 6 ||
-          wm_prog_data->dispatch_8 || wm_prog_data->dispatch_16) {
-         wm.KernelStartPointer0 = KSP(brw, stage_state->prog_offset);
-      }
-
-#if GEN_GEN >= 5
-      if (GEN_GEN == 6 || wm_prog_data->prog_offset_2) {
-         wm.KernelStartPointer2 =
-            KSP(brw, stage_state->prog_offset + wm_prog_data->prog_offset_2);
-      }
-#endif
 
 #if GEN_GEN == 6
       wm.DualSourceBlendEnable =
@@ -1873,13 +2031,10 @@ genX(upload_wm)(struct brw_context *brw)
          wm.PositionXYOffsetSelect = POSOFFSET_SAMPLE;
       else
          wm.PositionXYOffsetSelect = POSOFFSET_NONE;
-
-      wm.DispatchGRFStartRegisterForConstantSetupData2 =
-         wm_prog_data->dispatch_grf_start_reg_2;
 #endif
 
       if (wm_prog_data->base.total_scratch) {
-         wm.ScratchSpaceBasePointer = rw_bo(stage_state->scratch_bo, 0);
+         wm.ScratchSpaceBasePointer = rw_32_bo(stage_state->scratch_bo, 0);
          wm.PerThreadScratchSpace =
             ffs(stage_state->per_thread_scratch) - 11;
       }
@@ -1998,16 +2153,30 @@ static const struct brw_tracked_state genX(wm_state) = {
 
 /* ---------------------------------------------------------------------- */
 
+/* We restrict scratch buffers to the bottom 32 bits of the address space
+ * by using rw_32_bo().
+ *
+ * General State Base Address is a bit broken.  If the address + size as
+ * seen by STATE_BASE_ADDRESS overflows 48 bits, the GPU appears to treat
+ * all accesses to the buffer as being out of bounds and returns zero.
+ */
+
 #define INIT_THREAD_DISPATCH_FIELDS(pkt, prefix) \
    pkt.KernelStartPointer = KSP(brw, stage_state->prog_offset);           \
    pkt.SamplerCount       =                                               \
       DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4);          \
+   /* Gen 11 workarounds table #2056 WABTPPrefetchDisable suggests to     \
+    * disable prefetching of binding tables in A0 and B0 steppings.       \
+    * TODO: Revisit this WA on C0 stepping.                               \
+    */                                                                    \
    pkt.BindingTableEntryCount =                                           \
+      GEN_GEN == 11 ?                                                     \
+      0 :                                                                 \
       stage_prog_data->binding_table.size_bytes / 4;                      \
    pkt.FloatingPointMode  = stage_prog_data->use_alt_mode;                \
                                                                           \
    if (stage_prog_data->total_scratch) {                                  \
-      pkt.ScratchSpaceBasePointer = rw_bo(stage_state->scratch_bo, 0);    \
+      pkt.ScratchSpaceBasePointer = rw_32_bo(stage_state->scratch_bo, 0); \
       pkt.PerThreadScratchSpace =                                         \
          ffs(stage_state->per_thread_scratch) - 11;                       \
    }                                                                      \
@@ -2034,6 +2203,8 @@ genX(upload_vs_state)(struct brw_context *brw)
 
    assert(vue_prog_data->dispatch_mode == DISPATCH_MODE_SIMD8 ||
           vue_prog_data->dispatch_mode == DISPATCH_MODE_4X2_DUAL_OBJECT);
+   assert(GEN_GEN < 11 ||
+          vue_prog_data->dispatch_mode == DISPATCH_MODE_SIMD8);
 
 #if GEN_GEN == 6
    /* From the BSpec, 3D Pipeline > Geometry > Vertex Shader > State,
@@ -2050,8 +2221,8 @@ genX(upload_vs_state)(struct brw_context *brw)
    brw_batch_emit(brw, GENX(3DSTATE_CONSTANT_VS), cvs) {
       if (stage_state->push_const_size != 0) {
          cvs.Buffer0Valid = true;
-         cvs.PointertoVSConstantBuffer0 = stage_state->push_const_offset;
-         cvs.VSConstantBuffer0ReadLength = stage_state->push_const_size - 1;
+         cvs.ConstantBody.PointertoConstantBuffer0 = stage_state->push_const_offset;
+         cvs.ConstantBody.ConstantBuffer0ReadLength = stage_state->push_const_size - 1;
       }
    }
 #endif
@@ -2082,7 +2253,7 @@ genX(upload_vs_state)(struct brw_context *brw)
 
       vs.StatisticsEnable = false;
       vs.SamplerStatePointer =
-         ro_bo(brw->batch.state_bo, stage_state->sampler_offset);
+         ro_bo(brw->batch.state.bo, stage_state->sampler_offset);
 #endif
 
 #if GEN_GEN == 5
@@ -2208,7 +2379,7 @@ const struct brw_tracked_state genX(cc_vp) = {
 
 static void
 set_scissor_bits(const struct gl_context *ctx, int i,
-                 bool render_to_fbo, unsigned fb_width, unsigned fb_height,
+                 bool flip_y, unsigned fb_width, unsigned fb_height,
                  struct GENX(SCISSOR_RECT) *sc)
 {
    int bbox[4];
@@ -2230,7 +2401,7 @@ set_scissor_bits(const struct gl_context *ctx, int i,
       sc->ScissorRectangleXMax = 0;
       sc->ScissorRectangleYMin = 1;
       sc->ScissorRectangleYMax = 0;
-   } else if (render_to_fbo) {
+   } else if (!flip_y) {
       /* texmemory: Y=0=bottom */
       sc->ScissorRectangleXMin = bbox[0];
       sc->ScissorRectangleXMax = bbox[1] - 1;
@@ -2250,7 +2421,7 @@ static void
 genX(upload_scissor_state)(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
-   const bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+   const bool flip_y = ctx->DrawBuffer->FlipY;
    struct GENX(SCISSOR_RECT) scissor;
    uint32_t scissor_state_offset;
    const unsigned int fb_width = _mesa_geometric_width(ctx->DrawBuffer);
@@ -2274,7 +2445,7 @@ genX(upload_scissor_state)(struct brw_context *brw)
     * inclusive but max is exclusive.
     */
    for (unsigned i = 0; i < viewport_count; i++) {
-      set_scissor_bits(ctx, i, render_to_fbo, fb_width, fb_height, &scissor);
+      set_scissor_bits(ctx, i, flip_y, fb_width, fb_height, &scissor);
       GENX(SCISSOR_RECT_pack)(
          NULL, scissor_map + i * GENX(SCISSOR_RECT_length), &scissor);
    }
@@ -2343,6 +2514,17 @@ brw_calculate_guardband_size(uint32_t fb_width, uint32_t fb_height,
     */
    const float gb_size = GEN_GEN >= 7 ? 16384.0f : 8192.0f;
 
+   /* Workaround: prevent gpu hangs on SandyBridge
+    * by disabling guardband clipping for odd dimensions.
+    */
+   if (GEN_GEN == 6 && (fb_width & 1 || fb_height & 1)) {
+      *xmin = -1.0f;
+      *xmax =  1.0f;
+      *ymin = -1.0f;
+      *ymax =  1.0f;
+      return;
+   }
+
    if (m00 != 0 && m11 != 0) {
       /* First, we compute the screen-space render area */
       const float ss_ra_xmin = MIN3(        0, m30 + m00, m30 - m00);
@@ -2389,7 +2571,7 @@ genX(upload_sf_clip_viewport)(struct brw_context *brw)
    const unsigned viewport_count = brw->clip.viewport_count;
 
    /* _NEW_BUFFERS */
-   const bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+   const bool flip_y = ctx->DrawBuffer->FlipY;
    const uint32_t fb_width = (float)_mesa_geometric_width(ctx->DrawBuffer);
    const uint32_t fb_height = (float)_mesa_geometric_height(ctx->DrawBuffer);
 
@@ -2413,12 +2595,12 @@ genX(upload_sf_clip_viewport)(struct brw_context *brw)
 #endif
 
    /* _NEW_BUFFERS */
-   if (render_to_fbo) {
-      y_scale = 1.0;
-      y_bias = 0;
-   } else {
+   if (flip_y) {
       y_scale = -1.0;
       y_bias = (float)fb_height;
+   } else {
+      y_scale = 1.0;
+      y_bias = 0;
    }
 
    for (unsigned i = 0; i < brw->clip.viewport_count; i++) {
@@ -2446,29 +2628,33 @@ genX(upload_sf_clip_viewport)(struct brw_context *brw)
       clv.YMaxClipGuardband = gb_ymax;
 
 #if GEN_GEN < 6
-      set_scissor_bits(ctx, i, render_to_fbo, fb_width, fb_height,
+      set_scissor_bits(ctx, i, flip_y, fb_width, fb_height,
                        &sfv.ScissorRectangle);
 #elif GEN_GEN >= 8
       /* _NEW_VIEWPORT | _NEW_BUFFERS: Screen Space Viewport
        * The hardware will take the intersection of the drawing rectangle,
-       * scissor rectangle, and the viewport extents. We don't need to be
-       * smart, and can therefore just program the viewport extents.
+       * scissor rectangle, and the viewport extents.  However, emitting
+       * 3DSTATE_DRAWING_RECTANGLE is expensive since it requires a full
+       * pipeline stall so we're better off just being a little more clever
+       * with our viewport so we can emit it once at context creation time.
        */
+      const float viewport_Xmin = MAX2(ctx->ViewportArray[i].X, 0);
+      const float viewport_Ymin = MAX2(ctx->ViewportArray[i].Y, 0);
       const float viewport_Xmax =
-         ctx->ViewportArray[i].X + ctx->ViewportArray[i].Width;
+         MIN2(ctx->ViewportArray[i].X + ctx->ViewportArray[i].Width, fb_width);
       const float viewport_Ymax =
-         ctx->ViewportArray[i].Y + ctx->ViewportArray[i].Height;
+         MIN2(ctx->ViewportArray[i].Y + ctx->ViewportArray[i].Height, fb_height);
 
-      if (render_to_fbo) {
-         sfv.XMinViewPort = ctx->ViewportArray[i].X;
-         sfv.XMaxViewPort = viewport_Xmax - 1;
-         sfv.YMinViewPort = ctx->ViewportArray[i].Y;
-         sfv.YMaxViewPort = viewport_Ymax - 1;
-      } else {
-         sfv.XMinViewPort = ctx->ViewportArray[i].X;
+      if (flip_y) {
+         sfv.XMinViewPort = viewport_Xmin;
          sfv.XMaxViewPort = viewport_Xmax - 1;
          sfv.YMinViewPort = fb_height - viewport_Ymax;
-         sfv.YMaxViewPort = fb_height - ctx->ViewportArray[i].Y - 1;
+         sfv.YMaxViewPort = fb_height - viewport_Ymin - 1;
+      } else {
+         sfv.XMinViewPort = viewport_Xmin;
+         sfv.XMaxViewPort = viewport_Xmax - 1;
+         sfv.YMinViewPort = viewport_Ymin;
+         sfv.YMaxViewPort = viewport_Ymax - 1;
       }
 #endif
 
@@ -2538,8 +2724,8 @@ genX(upload_gs_state)(struct brw_context *brw)
    brw_batch_emit(brw, GENX(3DSTATE_CONSTANT_GS), cgs) {
       if (active && stage_state->push_const_size != 0) {
          cgs.Buffer0Valid = true;
-         cgs.PointertoGSConstantBuffer0 = stage_state->push_const_offset;
-         cgs.GSConstantBuffer0ReadLength = stage_state->push_const_size - 1;
+         cgs.ConstantBody.PointertoConstantBuffer0 = stage_state->push_const_offset;
+         cgs.ConstantBody.ConstantBuffer0ReadLength = stage_state->push_const_size - 1;
       }
    }
 #endif
@@ -2811,8 +2997,7 @@ set_blend_entry_bits(struct brw_context *brw, BLEND_ENTRY_GENXML *entry, int i,
                 _mesa_enum_to_string(rb_type));
       if (GEN_GEN >= 8 || rb_type == GL_UNSIGNED_NORMALIZED) {
          entry->LogicOpEnable = true;
-         entry->LogicOpFunction =
-            intel_translate_logic_op(ctx->Color.LogicOp);
+         entry->LogicOpFunction = ctx->Color._LogicOp;
       }
    } else if (blend_enabled && !ctx->Color._AdvancedBlendMode
               && (GEN_GEN <= 5 || !integer)) {
@@ -2964,10 +3149,10 @@ genX(upload_blend_state)(struct brw_context *brw)
          entry.PostBlendColorClampEnable = true;
          entry.ColorClampRange = COLORCLAMP_RTFORMAT;
 
-         entry.WriteDisableRed   = !ctx->Color.ColorMask[i][0];
-         entry.WriteDisableGreen = !ctx->Color.ColorMask[i][1];
-         entry.WriteDisableBlue  = !ctx->Color.ColorMask[i][2];
-         entry.WriteDisableAlpha = !ctx->Color.ColorMask[i][3];
+         entry.WriteDisableRed   = !GET_COLORMASK_BIT(ctx->Color.ColorMask, i, 0);
+         entry.WriteDisableGreen = !GET_COLORMASK_BIT(ctx->Color.ColorMask, i, 1);
+         entry.WriteDisableBlue  = !GET_COLORMASK_BIT(ctx->Color.ColorMask, i, 2);
+         entry.WriteDisableAlpha = !GET_COLORMASK_BIT(ctx->Color.ColorMask, i, 3);
 
 #if GEN_GEN >= 8
          GENX(BLEND_STATE_ENTRY_pack)(NULL, &blend_map[1 + i * 2], &entry);
@@ -3287,7 +3472,8 @@ genX(upload_multisample_state)(struct brw_context *brw)
 
 static const struct brw_tracked_state genX(multisample_state) = {
    .dirty = {
-      .mesa = _NEW_MULTISAMPLE,
+      .mesa = _NEW_MULTISAMPLE |
+              (GEN_GEN == 10 ? _NEW_BUFFERS : 0),
       .brw = BRW_NEW_BLORP |
              BRW_NEW_CONTEXT |
              BRW_NEW_NUM_SAMPLES,
@@ -3321,7 +3507,7 @@ genX(upload_color_calc_state)(struct brw_context *brw)
       cc.StatisticsEnable = brw->stats_wm;
 
       cc.CCViewportStatePointer =
-         ro_bo(brw->batch.state_bo, brw->cc.vp_offset);
+         ro_bo(brw->batch.state.bo, brw->cc.vp_offset);
 #else
       /* _NEW_COLOR */
       cc.BlendConstantColorRed = ctx->Color.BlendColorUnclamped[0];
@@ -3399,14 +3585,14 @@ genX(upload_sbe)(struct brw_context *brw)
       sbe.NumberofSFOutputAttributes = wm_prog_data->num_varying_inputs;
 
       /* _NEW_BUFFERS */
-      bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+      bool flip_y = ctx->DrawBuffer->FlipY;
 
       /* _NEW_POINT
        *
        * Window coordinates in an FBO are inverted, which means point
        * sprite origin must be inverted.
        */
-      if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo)
+      if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) == flip_y)
          sbe.PointSpriteTextureCoordinateOrigin = LOWERLEFT;
       else
          sbe.PointSpriteTextureCoordinateOrigin = UPPERLEFT;
@@ -3442,10 +3628,8 @@ genX(upload_sbe)(struct brw_context *brw)
 
 #if GEN_GEN >= 9
       /* prepare the active component dwords */
-      const int num_inputs = urb_entry_read_length * 2;
-      for (int input_index = 0; input_index < num_inputs; input_index++) {
-         sbe.AttributeActiveComponentFormat[input_index] = ACTIVE_COMPONENT_XYZW;
-      }
+      for (int i = 0; i < 32; i++)
+         sbe.AttributeActiveComponentFormat[i] = ACTIVE_COMPONENT_XYZW;
 #endif
    }
 
@@ -3603,19 +3787,20 @@ genX(upload_3dstate_so_buffers)(struct brw_context *brw)
    for (int i = 0; i < 4; i++) {
       struct intel_buffer_object *bufferobj =
          intel_buffer_object(xfb_obj->Buffers[i]);
+      uint32_t start = xfb_obj->Offset[i];
+      uint32_t end = ALIGN(start + xfb_obj->Size[i], 4);
+      uint32_t const size = end - start;
 
-      if (!bufferobj) {
+      if (!bufferobj || !size) {
          brw_batch_emit(brw, GENX(3DSTATE_SO_BUFFER), sob) {
             sob.SOBufferIndex = i;
          }
          continue;
       }
 
-      uint32_t start = xfb_obj->Offset[i];
       assert(start % 4 == 0);
-      uint32_t end = ALIGN(start + xfb_obj->Size[i], 4);
       struct brw_bo *bo =
-         intel_bufferobj_buffer(brw, bufferobj, start, end - start, true);
+         intel_bufferobj_buffer(brw, bufferobj, start, size, true);
       assert(end <= bo->size);
 
       brw_batch_emit(brw, GENX(3DSTATE_SO_BUFFER), sob) {
@@ -3787,7 +3972,13 @@ genX(upload_ps)(struct brw_context *brw)
          DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4);
 
       /* BRW_NEW_FS_PROG_DATA */
-      ps.BindingTableEntryCount = prog_data->base.binding_table.size_bytes / 4;
+      /* Gen 11 workarounds table #2056 WABTPPrefetchDisable suggests to disable
+       * prefetching of binding tables in A0 and B0 steppings.
+       * TODO: Revisit this workaround on C0 stepping.
+       */
+      ps.BindingTableEntryCount = GEN_GEN == 11 ?
+                                  0 :
+                                  prog_data->base.binding_table.size_bytes / 4;
 
       if (prog_data->base.use_alt_mode)
          ps.FloatingPointMode = Alternate;
@@ -3801,11 +3992,12 @@ genX(upload_ps)(struct brw_context *brw)
       ps.SampleMask = genX(determine_sample_mask(brw));
 #endif
 
-      /* 3DSTATE_PS expects the number of threads per PSD, which is always 64;
-       * it implicitly scales for different GT levels (which have some # of
-       * PSDs).
+      /* 3DSTATE_PS expects the number of threads per PSD, which is always 64
+       * for pre Gen11 and 128 for gen11+; On gen11+ If a programmed value is
+       * k, it implies 2(k+1) threads. It implicitly scales for different GT
+       * levels (which have some # of PSDs).
        *
-       * In Gen8 the format is U8-2 whereas in Gen9 it is U8-1.
+       * In Gen8 the format is U8-2 whereas in Gen9+ it is U9-1.
        */
 #if GEN_GEN >= 9
       ps.MaximumNumberofThreadsPerPSD = 64 - 1;
@@ -3862,19 +4054,42 @@ genX(upload_ps)(struct brw_context *brw)
 
       ps._8PixelDispatchEnable = prog_data->dispatch_8;
       ps._16PixelDispatchEnable = prog_data->dispatch_16;
-      ps.DispatchGRFStartRegisterForConstantSetupData0 =
-         prog_data->base.dispatch_grf_start_reg;
-      ps.DispatchGRFStartRegisterForConstantSetupData2 =
-         prog_data->dispatch_grf_start_reg_2;
+      ps._32PixelDispatchEnable = prog_data->dispatch_32;
 
-      ps.KernelStartPointer0 = stage_state->prog_offset;
+      /* From the Sky Lake PRM 3DSTATE_PS::32 Pixel Dispatch Enable:
+       *
+       *    "When NUM_MULTISAMPLES = 16 or FORCE_SAMPLE_COUNT = 16, SIMD32
+       *    Dispatch must not be enabled for PER_PIXEL dispatch mode."
+       *
+       * Since 16x MSAA is first introduced on SKL, we don't need to apply
+       * the workaround on any older hardware.
+       *
+       * BRW_NEW_NUM_SAMPLES
+       */
+      if (GEN_GEN >= 9 && !prog_data->persample_dispatch &&
+          brw->num_samples == 16) {
+         assert(ps._8PixelDispatchEnable || ps._16PixelDispatchEnable);
+         ps._32PixelDispatchEnable = false;
+      }
+
+      ps.DispatchGRFStartRegisterForConstantSetupData0 =
+         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
+      ps.DispatchGRFStartRegisterForConstantSetupData1 =
+         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
+      ps.DispatchGRFStartRegisterForConstantSetupData2 =
+         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
+
+      ps.KernelStartPointer0 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(prog_data, ps, 0);
+      ps.KernelStartPointer1 = stage_state->prog_offset +
+                               brw_wm_prog_data_prog_offset(prog_data, ps, 1);
       ps.KernelStartPointer2 = stage_state->prog_offset +
-         prog_data->prog_offset_2;
+                               brw_wm_prog_data_prog_offset(prog_data, ps, 2);
 
       if (prog_data->base.total_scratch) {
          ps.ScratchSpaceBasePointer =
-            rw_bo(stage_state->scratch_bo,
-                  ffs(stage_state->per_thread_scratch) - 11);
+            rw_32_bo(stage_state->scratch_bo,
+                     ffs(stage_state->per_thread_scratch) - 11);
       }
    }
 }
@@ -3887,7 +4102,8 @@ static const struct brw_tracked_state genX(ps_state) = {
                             : 0),
       .brw   = BRW_NEW_BATCH |
                BRW_NEW_BLORP |
-               BRW_NEW_FS_PROG_DATA,
+               BRW_NEW_FS_PROG_DATA |
+               (GEN_GEN >= 9 ? BRW_NEW_NUM_SAMPLES : 0),
    },
    .emit = genX(upload_ps),
 };
@@ -3950,6 +4166,9 @@ genX(upload_ds_state)(struct brw_context *brw)
    if (!tes_prog_data) {
       brw_batch_emit(brw, GENX(3DSTATE_DS), ds);
    } else {
+      assert(GEN_GEN < 11 ||
+             vue_prog_data->dispatch_mode == DISPATCH_MODE_SIMD8);
+
       brw_batch_emit(brw, GENX(3DSTATE_DS), ds) {
          INIT_THREAD_DISPATCH_FIELDS(ds, Patch);
 
@@ -4160,35 +4379,56 @@ genX(upload_cs_state)(struct brw_context *brw)
    uint32_t *bind = brw_state_batch(brw, prog_data->binding_table.size_bytes,
                                     32, &stage_state->bind_bo_offset);
 
+   /* The MEDIA_VFE_STATE documentation for Gen8+ says:
+    *
+    * "A stalling PIPE_CONTROL is required before MEDIA_VFE_STATE unless
+    *  the only bits that are changed are scoreboard related: Scoreboard
+    *  Enable, Scoreboard Type, Scoreboard Mask, Scoreboard * Delta. For
+    *  these scoreboard related states, a MEDIA_STATE_FLUSH is sufficient."
+    *
+    * Earlier generations say "MI_FLUSH" instead of "stalling PIPE_CONTROL",
+    * but MI_FLUSH isn't really a thing, so we assume they meant PIPE_CONTROL.
+    */
+   brw_emit_pipe_control_flush(brw, PIPE_CONTROL_CS_STALL);
+
    brw_batch_emit(brw, GENX(MEDIA_VFE_STATE), vfe) {
       if (prog_data->total_scratch) {
-         uint32_t bo_offset;
+         uint32_t per_thread_scratch_value;
 
          if (GEN_GEN >= 8) {
             /* Broadwell's Per Thread Scratch Space is in the range [0, 11]
              * where 0 = 1k, 1 = 2k, 2 = 4k, ..., 11 = 2M.
              */
-            bo_offset = ffs(stage_state->per_thread_scratch) - 11;
+            per_thread_scratch_value = ffs(stage_state->per_thread_scratch) - 11;
          } else if (GEN_IS_HASWELL) {
             /* Haswell's Per Thread Scratch Space is in the range [0, 10]
              * where 0 = 2k, 1 = 4k, 2 = 8k, ..., 10 = 2M.
              */
-            bo_offset = ffs(stage_state->per_thread_scratch) - 12;
+            per_thread_scratch_value = ffs(stage_state->per_thread_scratch) - 12;
          } else {
             /* Earlier platforms use the range [0, 11] to mean [1kB, 12kB]
              * where 0 = 1kB, 1 = 2kB, 2 = 3kB, ..., 11 = 12kB.
              */
-            bo_offset = stage_state->per_thread_scratch / 1024 - 1;
+            per_thread_scratch_value = stage_state->per_thread_scratch / 1024 - 1;
          }
-         vfe.ScratchSpaceBasePointer =
-            rw_bo(stage_state->scratch_bo, bo_offset);
+         vfe.ScratchSpaceBasePointer = rw_32_bo(stage_state->scratch_bo, 0);
+         vfe.PerThreadScratchSpace = per_thread_scratch_value;
       }
 
+      /* If brw->screen->subslice_total is greater than one, then
+       * devinfo->max_cs_threads stores number of threads per sub-slice;
+       * thus we need to multiply by that number by subslices to get
+       * the actual maximum number of threads; the -1 is because the HW
+       * has a bias of 1 (would not make sense to say the maximum number
+       * of threads is 0).
+       */
       const uint32_t subslices = MAX2(brw->screen->subslice_total, 1);
       vfe.MaximumNumberofThreads = devinfo->max_cs_threads * subslices - 1;
       vfe.NumberofURBEntries = GEN_GEN >= 8 ? 2 : 0;
+#if GEN_GEN < 11
       vfe.ResetGatewayTimer =
          Resettingrelativetimerandlatchingtheglobaltimestamp;
+#endif
 #if GEN_GEN < 9
       vfe.BypassGatewayControl = BypassingOpenGatewayCloseGatewayprotocol;
 #endif
@@ -4278,19 +4518,19 @@ static const struct brw_tracked_state genX(cs_state) = {
 static void
 genX(upload_raster)(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->ctx;
+   const struct gl_context *ctx = &brw->ctx;
 
    /* _NEW_BUFFERS */
-   bool render_to_fbo = _mesa_is_user_fbo(ctx->DrawBuffer);
+   const bool flip_y = ctx->DrawBuffer->FlipY;
 
    /* _NEW_POLYGON */
-   struct gl_polygon_attrib *polygon = &ctx->Polygon;
+   const struct gl_polygon_attrib *polygon = &ctx->Polygon;
 
    /* _NEW_POINT */
-   struct gl_point_attrib *point = &ctx->Point;
+   const struct gl_point_attrib *point = &ctx->Point;
 
    brw_batch_emit(brw, GENX(3DSTATE_RASTER), raster) {
-      if (brw->polygon_front_bit == render_to_fbo)
+      if (brw->polygon_front_bit != flip_y)
          raster.FrontWinding = CounterClockwise;
 
       if (polygon->CullFlag) {
@@ -4311,7 +4551,7 @@ genX(upload_raster)(struct brw_context *brw)
          raster.CullMode = CULLMODE_NONE;
       }
 
-      point->SmoothFlag = raster.SmoothPointEnable;
+      raster.SmoothPointEnable = point->SmoothFlag;
 
       raster.DXMultisampleRasterizationEnable =
          _mesa_is_multisample_enabled(ctx);
@@ -4350,6 +4590,16 @@ genX(upload_raster)(struct brw_context *brw)
 
       /* _NEW_LINE */
       raster.AntialiasingEnable = ctx->Line.SmoothFlag;
+
+#if GEN_GEN == 10
+      /* _NEW_BUFFERS
+       * Antialiasing Enable bit MUST not be set when NUM_MULTISAMPLES > 1.
+       */
+      const bool multisampled_fbo =
+         _mesa_geometric_samples(ctx->DrawBuffer) > 1;
+      if (multisampled_fbo)
+         raster.AntialiasingEnable = false;
+#endif
 
       /* _NEW_SCISSOR */
       raster.ScissorRectangleEnable = ctx->Scissor.EnableFlags;
@@ -4633,8 +4883,8 @@ genX(emit_mi_report_perf_count)(struct brw_context *brw,
  * Emit a 3DSTATE_SAMPLER_STATE_POINTERS_{VS,HS,GS,DS,PS} packet.
  */
 static void
-genX(emit_sampler_state_pointers_xs)(struct brw_context *brw,
-                                     struct brw_stage_state *stage_state)
+genX(emit_sampler_state_pointers_xs)(MAYBE_UNUSED struct brw_context *brw,
+                                     MAYBE_UNUSED struct brw_stage_state *stage_state)
 {
 #if GEN_GEN >= 7
    static const uint16_t packet_headers[] = {
@@ -4674,7 +4924,7 @@ has_component(mesa_format format, int i)
 static void
 genX(upload_default_color)(struct brw_context *brw,
                            const struct gl_sampler_object *sampler,
-                           mesa_format format, GLenum base_format,
+                           MAYBE_UNUSED mesa_format format, GLenum base_format,
                            bool is_integer_format, bool is_stencil_sampling,
                            uint32_t *sdc_offset)
 {
@@ -4850,7 +5100,7 @@ genX(upload_default_color)(struct brw_context *brw,
 }
 
 static uint32_t
-translate_wrap_mode(struct brw_context *brw, GLenum wrap, bool using_nearest)
+translate_wrap_mode(GLenum wrap, MAYBE_UNUSED bool using_nearest)
 {
    switch (wrap) {
    case GL_REPEAT:
@@ -4915,8 +5165,7 @@ genX(update_sampler_state)(struct brw_context *brw,
                            mesa_format format, GLenum base_format,
                            const struct gl_texture_object *texObj,
                            const struct gl_sampler_object *sampler,
-                           uint32_t *sampler_state,
-                           uint32_t batch_offset_for_sampler_state)
+                           uint32_t *sampler_state)
 {
    struct GENX(SAMPLER_STATE) samp_st = { 0 };
 
@@ -4984,9 +5233,9 @@ genX(update_sampler_state)(struct brw_context *brw,
 
    bool either_nearest =
       sampler->MinFilter == GL_NEAREST || sampler->MagFilter == GL_NEAREST;
-   unsigned wrap_s = translate_wrap_mode(brw, sampler->WrapS, either_nearest);
-   unsigned wrap_t = translate_wrap_mode(brw, sampler->WrapT, either_nearest);
-   unsigned wrap_r = translate_wrap_mode(brw, sampler->WrapR, either_nearest);
+   unsigned wrap_s = translate_wrap_mode(sampler->WrapS, either_nearest);
+   unsigned wrap_t = translate_wrap_mode(sampler->WrapT, either_nearest);
+   unsigned wrap_r = translate_wrap_mode(sampler->WrapR, either_nearest);
 
    if (target == GL_TEXTURE_CUBE_MAP ||
        target == GL_TEXTURE_CUBE_MAP_ARRAY) {
@@ -5062,7 +5311,7 @@ genX(update_sampler_state)(struct brw_context *brw,
    }
 #if GEN_GEN < 6
       samp_st.BorderColorPointer =
-         ro_bo(brw->batch.state_bo, border_color_offset);
+         ro_bo(brw->batch.state.bo, border_color_offset);
 #else
       samp_st.BorderColorPointer = border_color_offset;
 #endif
@@ -5079,8 +5328,7 @@ genX(update_sampler_state)(struct brw_context *brw,
 static void
 update_sampler_state(struct brw_context *brw,
                      int unit,
-                     uint32_t *sampler_state,
-                     uint32_t batch_offset_for_sampler_state)
+                     uint32_t *sampler_state)
 {
    struct gl_context *ctx = &brw->ctx;
    const struct gl_texture_unit *texUnit = &ctx->Texture.Unit[unit];
@@ -5097,7 +5345,7 @@ update_sampler_state(struct brw_context *brw,
                               texUnit->LodBias,
                               firstImage->TexFormat, firstImage->_BaseFormat,
                               texObj, sampler,
-                              sampler_state, batch_offset_for_sampler_state);
+                              sampler_state);
 }
 
 static void
@@ -5122,19 +5370,15 @@ genX(upload_sampler_state_table)(struct brw_context *brw,
                                              32, &stage_state->sampler_offset);
    /* memset(sampler_state, 0, sampler_count * size_in_bytes); */
 
-   uint32_t batch_offset_for_sampler_state = stage_state->sampler_offset;
-
    for (unsigned s = 0; s < sampler_count; s++) {
       if (SamplersUsed & (1 << s)) {
          const unsigned unit = prog->SamplerUnits[s];
          if (ctx->Texture.Unit[unit]._Current) {
-            update_sampler_state(brw, unit, sampler_state,
-                                 batch_offset_for_sampler_state);
+            update_sampler_state(brw, unit, sampler_state);
          }
       }
 
       sampler_state += dwords;
-      batch_offset_for_sampler_state += size_in_bytes;
    }
 
    if (GEN_GEN >= 7 && stage_state->stage != MESA_SHADER_COMPUTE) {
@@ -5345,8 +5589,6 @@ genX(init_atoms)(struct brw_context *brw)
 
       /* Command packets:
        */
-      &brw_invariant_state,
-
       &brw_binding_table_pointers,
       &genX(blend_constant_color),
 
@@ -5462,19 +5704,14 @@ genX(init_atoms)(struct brw_context *brw)
        */
       &brw_vs_pull_constants,
       &brw_vs_ubo_surfaces,
-      &brw_vs_abo_surfaces,
       &brw_tcs_pull_constants,
       &brw_tcs_ubo_surfaces,
-      &brw_tcs_abo_surfaces,
       &brw_tes_pull_constants,
       &brw_tes_ubo_surfaces,
-      &brw_tes_abo_surfaces,
       &brw_gs_pull_constants,
       &brw_gs_ubo_surfaces,
-      &brw_gs_abo_surfaces,
       &brw_wm_pull_constants,
       &brw_wm_ubo_surfaces,
-      &brw_wm_abo_surfaces,
       &gen6_renderbuffer_surfaces,
       &brw_renderbuffer_read_surfaces,
       &brw_texture_surfaces,
@@ -5508,7 +5745,7 @@ genX(init_atoms)(struct brw_context *brw)
 
       &genX(scissor_state),
 
-      &gen7_depthbuffer,
+      &brw_depthbuffer,
 
       &genX(polygon_stipple),
       &genX(polygon_stipple_offset),
@@ -5554,19 +5791,14 @@ genX(init_atoms)(struct brw_context *brw)
        */
       &brw_vs_pull_constants,
       &brw_vs_ubo_surfaces,
-      &brw_vs_abo_surfaces,
       &brw_tcs_pull_constants,
       &brw_tcs_ubo_surfaces,
-      &brw_tcs_abo_surfaces,
       &brw_tes_pull_constants,
       &brw_tes_ubo_surfaces,
-      &brw_tes_abo_surfaces,
       &brw_gs_pull_constants,
       &brw_gs_ubo_surfaces,
-      &brw_gs_abo_surfaces,
       &brw_wm_pull_constants,
       &brw_wm_ubo_surfaces,
-      &brw_wm_abo_surfaces,
       &gen6_renderbuffer_surfaces,
       &brw_renderbuffer_read_surfaces,
       &brw_texture_surfaces,
@@ -5604,7 +5836,7 @@ genX(init_atoms)(struct brw_context *brw)
 
       &genX(scissor_state),
 
-      &gen7_depthbuffer,
+      &brw_depthbuffer,
 
       &genX(polygon_stipple),
       &genX(polygon_stipple_offset),
@@ -5636,7 +5868,6 @@ genX(init_atoms)(struct brw_context *brw)
       &genX(cs_push_constants),
       &genX(cs_pull_constants),
       &brw_cs_ubo_surfaces,
-      &brw_cs_abo_surfaces,
       &brw_cs_texture_surfaces,
       &brw_cs_work_groups_surface,
       &genX(cs_samplers),

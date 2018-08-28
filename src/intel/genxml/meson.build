@@ -28,13 +28,14 @@ gen_xml_files = [
   'gen8.xml',
   'gen9.xml',
   'gen10.xml',
+  'gen11.xml',
 ]
 
 genX_xml_h = custom_target(
   'genX_xml.h',
   input : ['gen_zipped_file.py', gen_xml_files],
   output : 'genX_xml.h',
-  command : [prog_python2, '@INPUT@'],
+  command : [prog_python, '@INPUT@'],
   capture : true,
 )
 
@@ -42,18 +43,17 @@ genX_bits_h = custom_target(
   'genX_bits.h',
   input : ['gen_bits_header.py', gen_xml_files],
   output : 'genX_bits.h',
-  command : [prog_python2, '@INPUT@', '-o', '@OUTPUT@'],
+  command : [prog_python, '@INPUT@', '-o', '@OUTPUT@'],
 )
 
 gen_xml_pack = []
 foreach f : gen_xml_files
   _name = '@0@_pack.h'.format(f.split('.')[0])
-  _xml = custom_target(
+  gen_xml_pack += custom_target(
     _name,
     input : ['gen_pack_header.py', f],
     output : _name,
-    command : [prog_python2, '@INPUT@'],
+    command : [prog_python, '@INPUT@'],
     capture : true,
   )
-  gen_xml_pack += _xml
 endforeach

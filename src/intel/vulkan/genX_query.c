@@ -94,8 +94,13 @@ VkResult genX(CreateQueryPool)(
    if (pdevice->supports_48bit_addresses)
       pool->bo.flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
 
+   if (pdevice->use_softpin)
+      pool->bo.flags |= EXEC_OBJECT_PINNED;
+
    if (pdevice->has_exec_async)
       pool->bo.flags |= EXEC_OBJECT_ASYNC;
+
+   anv_vma_alloc(device, &pool->bo);
 
    /* For query pools, we set the caching mode to I915_CACHING_CACHED.  On LLC
     * platforms, this does nothing.  On non-LLC platforms, this means snooping
@@ -129,6 +134,7 @@ void genX(DestroyQueryPool)(
       return;
 
    anv_gem_munmap(pool->bo.map, pool->bo.size);
+   anv_vma_free(device, &pool->bo);
    anv_gem_close(device, pool->bo.gem_handle);
    vk_free2(&device->alloc, pAllocator, pool);
 }
@@ -322,6 +328,30 @@ emit_query_availability(struct anv_cmd_buffer *cmd_buffer,
    }
 }
 
+/**
+ * Goes through a series of consecutive query indices in the given pool
+ * setting all element values to 0 and emitting them as available.
+ */
+static void
+emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
+                  struct anv_query_pool *pool,
+                  uint32_t first_index, uint32_t num_queries)
+{
+   const uint32_t num_elements = pool->stride / sizeof(uint64_t);
+
+   for (uint32_t i = 0; i < num_queries; i++) {
+      uint32_t slot_offset = (first_index + i) * pool->stride;
+      for (uint32_t j = 1; j < num_elements; j++) {
+         anv_batch_emit(&cmd_buffer->batch, GENX(MI_STORE_DATA_IMM), sdi) {
+            sdi.Address.bo = &pool->bo;
+            sdi.Address.offset = slot_offset + j * sizeof(uint64_t);
+            sdi.ImmediateData = 0ull;
+         }
+      }
+      emit_query_availability(cmd_buffer, &pool->bo, slot_offset);
+   }
+}
+
 void genX(CmdResetQueryPool)(
     VkCommandBuffer                             commandBuffer,
     VkQueryPool                                 queryPool,
@@ -384,20 +414,6 @@ void genX(CmdBeginQuery)(
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
    ANV_FROM_HANDLE(anv_query_pool, pool, queryPool);
-
-   /* Workaround: When meta uses the pipeline with the VS disabled, it seems
-    * that the pipelining of the depth write breaks. What we see is that
-    * samples from the render pass clear leaks into the first query
-    * immediately after the clear. Doing a pipecontrol with a post-sync
-    * operation and DepthStallEnable seems to work around the issue.
-    */
-   if (cmd_buffer->state.need_query_wa) {
-      cmd_buffer->state.need_query_wa = false;
-      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
-         pc.DepthCacheFlushEnable   = true;
-         pc.DepthStallEnable        = true;
-      }
-   }
 
    switch (pool->type) {
    case VK_QUERY_TYPE_OCCLUSION:
@@ -462,6 +478,21 @@ void genX(CmdEndQuery)(
    default:
       unreachable("");
    }
+
+   /* When multiview is active the spec requires that N consecutive query
+    * indices are used, where N is the number of active views in the subpass.
+    * The spec allows that we only write the results to one of the queries
+    * but we still need to manage result availability for all the query indices.
+    * Since we only emit a single query for all active views in the
+    * first index, mark the other query indices as being already available
+    * with result 0.
+    */
+   if (cmd_buffer->state.subpass && cmd_buffer->state.subpass->view_mask) {
+      const uint32_t num_queries =
+         _mesa_bitcount(cmd_buffer->state.subpass->view_mask);
+      if (num_queries > 1)
+         emit_zero_queries(cmd_buffer, pool, query + 1, num_queries - 1);
+   }
 }
 
 #define TIMESTAMP 0x2358
@@ -504,6 +535,21 @@ void genX(CmdWriteTimestamp)(
    }
 
    emit_query_availability(cmd_buffer, &pool->bo, offset);
+
+   /* When multiview is active the spec requires that N consecutive query
+    * indices are used, where N is the number of active views in the subpass.
+    * The spec allows that we only write the results to one of the queries
+    * but we still need to manage result availability for all the query indices.
+    * Since we only emit a single query for all active views in the
+    * first index, mark the other query indices as being already available
+    * with result 0.
+    */
+   if (cmd_buffer->state.subpass && cmd_buffer->state.subpass->view_mask) {
+      const uint32_t num_queries =
+         _mesa_bitcount(cmd_buffer->state.subpass->view_mask);
+      if (num_queries > 1)
+         emit_zero_queries(cmd_buffer, pool, query + 1, num_queries - 1);
+   }
 }
 
 #if GEN_GEN > 7 || GEN_IS_HASWELL
@@ -646,19 +692,14 @@ gpu_write_query_result(struct anv_batch *batch,
 
    anv_batch_emit(batch, GENX(MI_STORE_REGISTER_MEM), srm) {
       srm.RegisterAddress  = reg;
-      srm.MemoryAddress    = (struct anv_address) {
-         .bo = dst_buffer->bo,
-         .offset = dst_buffer->offset + dst_offset,
-      };
+      srm.MemoryAddress    = anv_address_add(dst_buffer->address, dst_offset);
    }
 
    if (flags & VK_QUERY_RESULT_64_BIT) {
       anv_batch_emit(batch, GENX(MI_STORE_REGISTER_MEM), srm) {
          srm.RegisterAddress  = reg + 4;
-         srm.MemoryAddress    = (struct anv_address) {
-            .bo = dst_buffer->bo,
-            .offset = dst_buffer->offset + dst_offset + 4,
-         };
+         srm.MemoryAddress    = anv_address_add(dst_buffer->address,
+                                                dst_offset + 4);
       }
    }
 }

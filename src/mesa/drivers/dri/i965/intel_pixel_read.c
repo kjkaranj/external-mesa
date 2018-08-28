@@ -39,7 +39,6 @@
 #include "brw_blorp.h"
 #include "intel_screen.h"
 #include "intel_batchbuffer.h"
-#include "intel_blit.h"
 #include "intel_buffers.h"
 #include "intel_fbo.h"
 #include "intel_mipmap_tree.h"
@@ -202,7 +201,7 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
    tiled_to_linear(
       xoffset * cpp, (xoffset + width) * cpp,
       yoffset, yoffset + height,
-      pixels - (ptrdiff_t) yoffset * dst_pitch - (ptrdiff_t) xoffset * cpp,
+      pixels,
       map + irb->mt->offset,
       dst_pitch, irb->mt->surf.row_pitch,
       brw->has_swizzling,

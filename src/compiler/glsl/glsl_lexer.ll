@@ -427,7 +427,7 @@ usamplerCubeArray TYPE_WITH_ALT(400, 310, 400, 320, yyextra->ARB_texture_cube_ma
 samplerCubeArrayShadow   TYPE_WITH_ALT(400, 310, 400, 320, yyextra->ARB_texture_cube_map_array_enable || yyextra->OES_texture_cube_map_array_enable || yyextra->EXT_texture_cube_map_array_enable, glsl_type::samplerCubeArrayShadow_type);
 
 samplerExternalOES		{
-			  if (yyextra->OES_EGL_image_external_enable) {
+			  if (yyextra->OES_EGL_image_external_enable || yyextra->OES_EGL_image_external_essl3_enable) {
 			     yylval->type = glsl_type::samplerExternalOES_type;
 			     return BASIC_TYPE_TOK;
 			  } else
@@ -491,6 +491,8 @@ void		return VOID_TOK;
 
 layout		{
 		  if ((yyextra->is_version(140, 300))
+		      || yyextra->ARB_bindless_texture_enable
+		      || yyextra->KHR_blend_equation_advanced_enable
 		      || yyextra->AMD_conservative_depth_enable
 		      || yyextra->ARB_conservative_depth_enable
 		      || yyextra->ARB_explicit_attrib_location_enable
@@ -500,7 +502,8 @@ layout		{
 		      || yyextra->ARB_fragment_coord_conventions_enable
                       || yyextra->ARB_shading_language_420pack_enable
                       || yyextra->ARB_compute_shader_enable
-                      || yyextra->ARB_tessellation_shader_enable) {
+                      || yyextra->ARB_tessellation_shader_enable
+                      || yyextra->EXT_shader_framebuffer_fetch_non_coherent_enable) {
 		      return LAYOUT_TOK;
 		   } else {
 		      return classify_identifier(yyextra, yytext, yyleng, yylval);
@@ -597,7 +600,7 @@ external	KEYWORD(110, 100, 0, 0, EXTERNAL);
 interface	KEYWORD(110, 100, 0, 0, INTERFACE);
 long		KEYWORD(110, 100, 0, 0, LONG_TOK);
 short		KEYWORD(110, 100, 0, 0, SHORT_TOK);
-double		TYPE_WITH_ALT(130, 300, 130, 300, yyextra->ARB_gpu_shader_fp64_enable, glsl_type::double_type);
+double		TYPE_WITH_ALT(130, 100, 130, 300, yyextra->ARB_gpu_shader_fp64_enable, glsl_type::double_type);
 half		KEYWORD(110, 100, 0, 0, HALF);
 fixed		KEYWORD(110, 100, 0, 0, FIXED_TOK);
 unsigned	KEYWORD(110, 100, 0, 0, UNSIGNED);
@@ -624,9 +627,9 @@ dmat4x4		TYPE_WITH_ALT(110, 100, 400, 0, yyextra->ARB_gpu_shader_fp64_enable, gl
 fvec2		KEYWORD(110, 100, 0, 0, FVEC2);
 fvec3		KEYWORD(110, 100, 0, 0, FVEC3);
 fvec4		KEYWORD(110, 100, 0, 0, FVEC4);
-sampler2DRect		DEPRECATED_ES_TYPE_WITH_ALT(yyextra->ARB_texture_rectangle_enable, glsl_type::sampler2DRect_type);
+sampler2DRect 		TYPE_WITH_ALT(110, 100, 0, 0, yyextra->ARB_texture_rectangle_enable, glsl_type::sampler2DRect_type);
 sampler3DRect		KEYWORD(110, 100, 0, 0, SAMPLER3DRECT);
-sampler2DRectShadow	DEPRECATED_ES_TYPE_WITH_ALT(yyextra->ARB_texture_rectangle_enable, glsl_type::sampler2DRectShadow_type);
+sampler2DRectShadow	TYPE_WITH_ALT(110, 100, 0, 0, yyextra->ARB_texture_rectangle_enable, glsl_type::sampler2DRectShadow_type);
 sizeof		KEYWORD(110, 100, 0, 0, SIZEOF);
 cast		KEYWORD(110, 100, 0, 0, CAST);
 namespace	KEYWORD(110, 100, 0, 0, NAMESPACE);

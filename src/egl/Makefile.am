@@ -27,6 +27,7 @@ BUILT_SOURCES =
 
 AM_CFLAGS = \
 	-I$(top_srcdir)/include \
+	-I$(top_srcdir)/include/drm-uapi \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/egl/main \
 	-I$(top_srcdir)/src/gbm/main \
@@ -46,11 +47,11 @@ libEGL_common_la_SOURCES = \
 	$(LIBEGL_C_FILES)
 
 libEGL_common_la_LIBADD = \
-	$(top_builddir)/src/mapi/shared-glapi/libglapi.la \
 	$(top_builddir)/src/util/libmesautil.la \
 	$(EGL_LIB_DEPS)
 
 dri2_backend_FILES =
+dri2_backend_GENERATED_FILES =
 dri3_backend_FILES =
 
 if HAVE_PLATFORM_X11
@@ -71,24 +72,28 @@ WL_DMABUF_XML = $(WAYLAND_PROTOCOLS_DATADIR)/unstable/linux-dmabuf/linux-dmabuf-
 
 drivers/dri2/linux-dmabuf-unstable-v1-protocol.c: $(WL_DMABUF_XML)
 	$(MKDIR_GEN)
-	$(AM_V_GEN)$(WAYLAND_SCANNER) code < $< > $@
+	$(AM_V_GEN)$(WAYLAND_SCANNER) $(SCANNER_ARG) $< $@
 
 drivers/dri2/linux-dmabuf-unstable-v1-client-protocol.h: $(WL_DMABUF_XML)
 	$(MKDIR_GEN)
-	$(AM_V_GEN)$(WAYLAND_SCANNER) client-header < $< > $@
+	$(AM_V_GEN)$(WAYLAND_SCANNER) client-header $< $@
 
 if HAVE_PLATFORM_WAYLAND
 drivers/dri2/linux-dmabuf-unstable-v1-protocol.lo: drivers/dri2/linux-dmabuf-unstable-v1-client-protocol.h
 drivers/dri2/egl_dri2.lo: drivers/dri2/linux-dmabuf-unstable-v1-client-protocol.h
+drivers/dri2/platform_wayland.lo: drivers/dri2/linux-dmabuf-unstable-v1-client-protocol.h
 
 AM_CFLAGS += $(WAYLAND_CLIENT_CFLAGS)
 libEGL_common_la_LIBADD += $(WAYLAND_CLIENT_LIBS)
 libEGL_common_la_LIBADD += $(LIBDRM_LIBS)
+AM_CFLAGS += $(WAYLAND_EGL_CFLAGS)
+libEGL_common_la_LIBADD += $(WAYLAND_EGL_LIBS)
 AM_CFLAGS += $(WAYLAND_SERVER_CFLAGS)
 libEGL_common_la_LIBADD += $(top_builddir)/src/egl/wayland/wayland-drm/libwayland-drm.la
 libEGL_common_la_LIBADD += $(WAYLAND_SERVER_LIBS)
 dri2_backend_FILES += \
-	drivers/dri2/platform_wayland.c	\
+	drivers/dri2/platform_wayland.c
+dri2_backend_GENERATED_FILES += \
 	drivers/dri2/linux-dmabuf-unstable-v1-protocol.c \
 	drivers/dri2/linux-dmabuf-unstable-v1-client-protocol.h
 endif
@@ -113,11 +118,13 @@ AM_CFLAGS += \
 	-I$(top_builddir)/src/egl/drivers/dri2 \
 	-I$(top_srcdir)/src/egl/drivers/dri2 \
 	-I$(top_srcdir)/src/gbm/backends/dri \
-	-I$(top_srcdir)/src/egl/wayland/wayland-egl \
 	-I$(top_builddir)/src/egl/wayland/wayland-drm \
 	-I$(top_srcdir)/src/egl/wayland/wayland-drm \
 	-DDEFAULT_DRIVER_DIR=\"$(DRI_DRIVER_SEARCH_DIR)\" \
 	-D_EGL_BUILT_IN_DRIVER_DRI2
+
+nodist_libEGL_common_la_SOURCES = \
+	$(dri2_backend_GENERATED_FILES)
 
 libEGL_common_la_SOURCES += \
 	$(dri2_backend_core_FILES) \
@@ -149,7 +156,10 @@ g_egldispatchstubs.h: $(GLVND_GEN_DEPS)
 		$(top_srcdir)/src/egl/generate/egl_other.xml > $@
 
 BUILT_SOURCES += g_egldispatchstubs.c g_egldispatchstubs.h
-CLEANFILES = $(BUILT_SOURCES)
+
+CLEANFILES = \
+	$(BUILT_SOURCES) \
+	$(dri2_backend_GENERATED_FILES)
 
 if USE_LIBGLVND
 AM_CFLAGS += \
@@ -165,7 +175,9 @@ libEGL_mesa_la_SOURCES = \
 	main/egldispatchstubs.c \
 	g_egldispatchstubs.c \
 	g_egldispatchstubs.h
-libEGL_mesa_la_LIBADD = libEGL_common.la
+libEGL_mesa_la_LIBADD = \
+	libEGL_common.la \
+	$(top_builddir)/src/mapi/shared-glapi/libglapi.la
 libEGL_mesa_la_LDFLAGS = \
 	-no-undefined \
 	-version-number 0 \
@@ -177,7 +189,9 @@ else # USE_LIBGLVND
 
 lib_LTLIBRARIES = libEGL.la
 libEGL_la_SOURCES =
-libEGL_la_LIBADD = libEGL_common.la
+libEGL_la_LIBADD = \
+	libEGL_common.la \
+	$(top_builddir)/src/mapi/shared-glapi/libglapi.la
 libEGL_la_LDFLAGS = \
 	-no-undefined \
 	-version-number 1:0 \
@@ -189,6 +203,7 @@ endif # USE_LIBGLVND
 
 include $(top_srcdir)/install-lib-links.mk
 
+# TODO: When building with glvnd, glvnd itself should be providing egl.pc and the headers
 pkgconfigdir = $(libdir)/pkgconfig
 
 pkgconfig_DATA = main/egl.pc
@@ -216,4 +231,5 @@ EXTRA_DIST = \
 	main/egl.def \
 	main/README.txt \
 	$(GLVND_GEN_DEPS) \
-	main/50_mesa.json
+	main/50_mesa.json \
+	meson.build

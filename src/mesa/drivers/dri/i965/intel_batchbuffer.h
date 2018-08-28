@@ -10,14 +10,22 @@
 extern "C" {
 #endif
 
+/* The kernel assumes batchbuffers are smaller than 256kB. */
+#define MAX_BATCH_SIZE (256 * 1024)
+
+/* 3DSTATE_BINDING_TABLE_POINTERS has a U16 offset from Surface State Base
+ * Address, which means that we can't put binding tables beyond 64kB.  This
+ * effectively limits the maximum statebuffer size to 64kB.
+ */
+#define MAX_STATE_SIZE (64 * 1024)
+
 struct intel_batchbuffer;
 
 void intel_batchbuffer_init(struct brw_context *brw);
 void intel_batchbuffer_free(struct intel_batchbuffer *batch);
 void intel_batchbuffer_save_state(struct brw_context *brw);
 void intel_batchbuffer_reset_to_saved(struct brw_context *brw);
-void intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz,
-                                     enum brw_gpu_ring ring);
+void intel_batchbuffer_require_space(struct brw_context *brw, GLuint sz);
 int _intel_batchbuffer_flush_fence(struct brw_context *brw,
                                    int in_fence_fd, int *out_fence_fd,
                                    const char *file, int line);
@@ -34,8 +42,7 @@ int _intel_batchbuffer_flush_fence(struct brw_context *brw,
  * intel_buffer_dword() calls.
  */
 void intel_batchbuffer_data(struct brw_context *brw,
-                            const void *data, GLuint bytes,
-                            enum brw_gpu_ring ring);
+                            const void *data, GLuint bytes);
 
 bool brw_batch_has_aperture_space(struct brw_context *brw,
                                   unsigned extra_space_in_bytes);
@@ -44,6 +51,12 @@ bool brw_batch_references(struct intel_batchbuffer *batch, struct brw_bo *bo);
 
 #define RELOC_WRITE EXEC_OBJECT_WRITE
 #define RELOC_NEEDS_GGTT EXEC_OBJECT_NEEDS_GTT
+/* Inverted meaning, but using the same bit...emit_reloc will flip it. */
+#define RELOC_32BIT EXEC_OBJECT_SUPPORTS_48B_ADDRESS
+
+void brw_use_pinned_bo(struct intel_batchbuffer *batch, struct brw_bo *bo,
+                       unsigned writeable_flag);
+
 uint64_t brw_batch_reloc(struct intel_batchbuffer *batch,
                          uint32_t batch_offset,
                          struct brw_bo *target,
@@ -55,7 +68,8 @@ uint64_t brw_state_reloc(struct intel_batchbuffer *batch,
                          uint32_t target_offset,
                          unsigned flags);
 
-#define USED_BATCH(batch) ((uintptr_t)((batch).map_next - (batch).map))
+#define USED_BATCH(_batch) \
+   ((uintptr_t)((_batch).map_next - (_batch).batch.map))
 
 static inline uint32_t float_as_int(float f)
 {
@@ -69,22 +83,9 @@ static inline uint32_t float_as_int(float f)
 }
 
 static inline void
-intel_batchbuffer_emit_dword(struct intel_batchbuffer *batch, GLuint dword)
+intel_batchbuffer_begin(struct brw_context *brw, int n)
 {
-   *batch->map_next++ = dword;
-   assert(batch->ring != UNKNOWN_RING);
-}
-
-static inline void
-intel_batchbuffer_emit_float(struct intel_batchbuffer *batch, float f)
-{
-   intel_batchbuffer_emit_dword(batch, float_as_int(f));
-}
-
-static inline void
-intel_batchbuffer_begin(struct brw_context *brw, int n, enum brw_gpu_ring ring)
-{
-   intel_batchbuffer_require_space(brw, n * 4, ring);
+   intel_batchbuffer_require_space(brw, n * 4);
 
 #ifdef DEBUG
    brw->batch.emit = USED_BATCH(brw->batch);
@@ -113,17 +114,18 @@ intel_batchbuffer_advance(struct brw_context *brw)
 static inline bool
 brw_ptr_in_state_buffer(struct intel_batchbuffer *batch, void *p)
 {
-   return (char *) p >= (char *) batch->state_map &&
-          (char *) p < (char *) batch->state_map + batch->state_bo->size;
+   return (char *) p >= (char *) batch->state.map &&
+          (char *) p < (char *) batch->state.map + batch->state.bo->size;
 }
 
 #define BEGIN_BATCH(n) do {                            \
-   intel_batchbuffer_begin(brw, (n), RENDER_RING);     \
+   intel_batchbuffer_begin(brw, (n));                  \
    uint32_t *__map = brw->batch.map_next;              \
    brw->batch.map_next += (n)
 
 #define BEGIN_BATCH_BLT(n) do {                        \
-   intel_batchbuffer_begin(brw, (n), BLT_RING);        \
+   assert(brw->screen->devinfo.gen < 6);               \
+   intel_batchbuffer_begin(brw, (n));                  \
    uint32_t *__map = brw->batch.map_next;              \
    brw->batch.map_next += (n)
 
@@ -131,7 +133,7 @@ brw_ptr_in_state_buffer(struct intel_batchbuffer *batch, void *p)
 #define OUT_BATCH_F(f) OUT_BATCH(float_as_int((f)))
 
 #define OUT_RELOC(buf, flags, delta) do {          \
-   uint32_t __offset = (__map - brw->batch.map) * 4;                    \
+   uint32_t __offset = (__map - brw->batch.batch.map) * 4;              \
    uint32_t reloc =                                                     \
       brw_batch_reloc(&brw->batch, __offset, (buf), (delta), (flags));  \
    OUT_BATCH(reloc);                                                    \
@@ -139,7 +141,7 @@ brw_ptr_in_state_buffer(struct intel_batchbuffer *batch, void *p)
 
 /* Handle 48-bit address relocations for Gen8+ */
 #define OUT_RELOC64(buf, flags, delta) do {        \
-   uint32_t __offset = (__map - brw->batch.map) * 4;                    \
+   uint32_t __offset = (__map - brw->batch.batch.map) * 4;              \
    uint64_t reloc64 =                                                   \
       brw_batch_reloc(&brw->batch, __offset, (buf), (delta), (flags));  \
    OUT_BATCH(reloc64);                                                  \

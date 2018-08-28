@@ -453,6 +453,7 @@ enum SVSemantic
    SV_TESS_INNER,
    SV_TESS_COORD,
    SV_TID,
+   SV_COMBINED_TID,
    SV_CTAID,
    SV_NTID,
    SV_GRIDID,
@@ -1024,6 +1025,7 @@ public:
       bool liveOnly; // only execute on live pixels of a quad (optimization)
       bool levelZero;
       bool derivAll;
+      bool bindless;
 
       int8_t useOffsets; // 0, 1, or 4 for textureGatherOffsets
       int8_t offset[3]; // only used on nv50

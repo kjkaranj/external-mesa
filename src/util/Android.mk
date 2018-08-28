@@ -71,7 +71,7 @@ $(POT): $(LOCAL_PATH)/xmlpool/t_options.h
 	@mkdir -p $(dir $@)
 	xgettext -L C --from-code utf-8 -o $@ $<
 
-$(intermediates)/xmlpool/%.po: $(LOCAL_PATH)/xmlpool/%.po $(POT)
+$(MESA_DRI_OPTIONS_LANGS:%=$(intermediates)/xmlpool/%.po): $(intermediates)/xmlpool/%.po: $(LOCAL_PATH)/xmlpool/%.po $(POT)
 	lang=$(basename $(notdir $@)); \
 	mkdir -p $(dir $@); \
 	if [ -f $< ]; then \
@@ -101,7 +101,7 @@ $(UTIL_GENERATED_SOURCES): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ > $@
 $(UTIL_GENERATED_SOURCES): $(intermediates)/%.c: $(LOCAL_PATH)/%.py
 	$(transform-generated-source)
 
-$(MESA_DRI_OPTIONS_H): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ $(PRIVATE_TEMPLATE_HEADER) \
+$(MESA_DRI_OPTIONS_H): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $< $(PRIVATE_TEMPLATE_HEADER) \
 		$(PRIVATE_LOCALEDIR) $(MESA_DRI_OPTIONS_LANGS) > $@
 $(MESA_DRI_OPTIONS_H): $(PRIVATE_SCRIPT) $(PRIVATE_TEMPLATE_HEADER) $(PRIVATE_MO_FILES)
 	$(transform-generated-source)
