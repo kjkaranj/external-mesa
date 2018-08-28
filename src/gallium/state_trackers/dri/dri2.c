@@ -55,6 +55,10 @@
 #endif
 
 static const int fourcc_formats[] = {
+   __DRI_IMAGE_FOURCC_ARGB2101010,
+   __DRI_IMAGE_FOURCC_XRGB2101010,
+   __DRI_IMAGE_FOURCC_ABGR2101010,
+   __DRI_IMAGE_FOURCC_XBGR2101010,
    __DRI_IMAGE_FOURCC_ARGB8888,
    __DRI_IMAGE_FOURCC_ABGR8888,
    __DRI_IMAGE_FOURCC_SARGB8888,
@@ -105,6 +109,22 @@ static int convert_fourcc(int format, int *dri_components_p)
       format = __DRI_IMAGE_FORMAT_XBGR8888;
       dri_components = __DRI_IMAGE_COMPONENTS_RGB;
       break;
+   case __DRI_IMAGE_FOURCC_ARGB2101010:
+      format = __DRI_IMAGE_FORMAT_ARGB2101010;
+      dri_components = __DRI_IMAGE_COMPONENTS_RGBA;
+      break;
+   case __DRI_IMAGE_FOURCC_XRGB2101010:
+      format = __DRI_IMAGE_FORMAT_XRGB2101010;
+      dri_components = __DRI_IMAGE_COMPONENTS_RGB;
+      break;
+   case __DRI_IMAGE_FOURCC_ABGR2101010:
+      format = __DRI_IMAGE_FORMAT_ABGR2101010;
+      dri_components = __DRI_IMAGE_COMPONENTS_RGBA;
+      break;
+   case __DRI_IMAGE_FOURCC_XBGR2101010:
+      format = __DRI_IMAGE_FORMAT_XBGR2101010;
+      dri_components = __DRI_IMAGE_COMPONENTS_RGB;
+      break;
    case __DRI_IMAGE_FOURCC_R8:
       format = __DRI_IMAGE_FORMAT_R8;
       dri_components = __DRI_IMAGE_COMPONENTS_R;
@@ -120,6 +140,10 @@ static int convert_fourcc(int format, int *dri_components_p)
    case __DRI_IMAGE_FOURCC_GR1616:
       format = __DRI_IMAGE_FORMAT_GR1616;
       dri_components = __DRI_IMAGE_COMPONENTS_RG;
+      break;
+   case __DRI_IMAGE_FOURCC_YUYV:
+      format = __DRI_IMAGE_FORMAT_YUYV;
+      dri_components = __DRI_IMAGE_COMPONENTS_Y_XUXV;
       break;
    /*
     * For multi-planar YUV formats, we return the format of the first
@@ -166,6 +190,18 @@ static int convert_to_fourcc(int format)
    case __DRI_IMAGE_FORMAT_XBGR8888:
       format = __DRI_IMAGE_FOURCC_XBGR8888;
       break;
+   case __DRI_IMAGE_FORMAT_ARGB2101010:
+      format = __DRI_IMAGE_FOURCC_ARGB2101010;
+      break;
+   case __DRI_IMAGE_FORMAT_XRGB2101010:
+      format = __DRI_IMAGE_FOURCC_XRGB2101010;
+      break;
+   case __DRI_IMAGE_FORMAT_ABGR2101010:
+      format = __DRI_IMAGE_FOURCC_ABGR2101010;
+      break;
+   case __DRI_IMAGE_FORMAT_XBGR2101010:
+      format = __DRI_IMAGE_FOURCC_XBGR2101010;
+      break;
    case __DRI_IMAGE_FORMAT_R8:
       format = __DRI_IMAGE_FOURCC_R8;
       break;
@@ -198,6 +234,18 @@ static enum pipe_format dri2_format_to_pipe_format (int format)
    case __DRI_IMAGE_FORMAT_ABGR8888:
       pf = PIPE_FORMAT_RGBA8888_UNORM;
       break;
+   case __DRI_IMAGE_FORMAT_XRGB2101010:
+      pf = PIPE_FORMAT_B10G10R10X2_UNORM;
+      break;
+   case __DRI_IMAGE_FORMAT_ARGB2101010:
+      pf = PIPE_FORMAT_B10G10R10A2_UNORM;
+      break;
+   case __DRI_IMAGE_FORMAT_XBGR2101010:
+      pf = PIPE_FORMAT_R10G10B10X2_UNORM;
+      break;
+   case __DRI_IMAGE_FORMAT_ABGR2101010:
+      pf = PIPE_FORMAT_R10G10B10A2_UNORM;
+      break;
    case __DRI_IMAGE_FORMAT_R8:
       pf = PIPE_FORMAT_R8_UNORM;
       break;
@@ -209,6 +257,9 @@ static enum pipe_format dri2_format_to_pipe_format (int format)
       break;
    case __DRI_IMAGE_FORMAT_GR1616:
       pf = PIPE_FORMAT_R16G16_UNORM;
+      break;
+   case __DRI_IMAGE_FORMAT_YUYV:
+      pf = PIPE_FORMAT_YUYV;
       break;
    default:
       pf = PIPE_FORMAT_NONE;
@@ -252,6 +303,18 @@ static enum pipe_format fourcc_to_pipe_format(int fourcc)
       break;
    case __DRI_IMAGE_FOURCC_XBGR8888:
       pf = PIPE_FORMAT_RGBX8888_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_ARGB2101010:
+      pf = PIPE_FORMAT_B10G10R10A2_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_XRGB2101010:
+      pf = PIPE_FORMAT_B10G10R10X2_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_ABGR2101010:
+      pf = PIPE_FORMAT_R10G10B10A2_UNORM;
+      break;
+   case __DRI_IMAGE_FOURCC_XBGR2101010:
+      pf = PIPE_FORMAT_R10G10B10X2_UNORM;
       break;
 
    case __DRI_IMAGE_FOURCC_NV12:
@@ -370,10 +433,16 @@ dri2_drawable_get_buffers(struct dri_drawable *drawable,
        * may occur as the stvis->color_format.
        */
       switch(format) {
+      case PIPE_FORMAT_B10G10R10A2_UNORM:
+      case PIPE_FORMAT_R10G10B10A2_UNORM:
       case PIPE_FORMAT_BGRA8888_UNORM:
       case PIPE_FORMAT_RGBA8888_UNORM:
 	 depth = 32;
 	 break;
+      case PIPE_FORMAT_R10G10B10X2_UNORM:
+      case PIPE_FORMAT_B10G10R10X2_UNORM:
+         depth = 30;
+         break;
       case PIPE_FORMAT_BGRX8888_UNORM:
       case PIPE_FORMAT_RGBX8888_UNORM:
 	 depth = 24;
@@ -457,6 +526,18 @@ dri_image_drawable_get_buffers(struct dri_drawable *drawable,
       case PIPE_FORMAT_RGBA8888_UNORM:
          image_format = __DRI_IMAGE_FORMAT_ABGR8888;
          break;
+      case PIPE_FORMAT_B10G10R10X2_UNORM:
+         image_format = __DRI_IMAGE_FORMAT_XRGB2101010;
+         break;
+      case PIPE_FORMAT_B10G10R10A2_UNORM:
+         image_format = __DRI_IMAGE_FORMAT_ARGB2101010;
+         break;
+      case PIPE_FORMAT_R10G10B10X2_UNORM:
+         image_format = __DRI_IMAGE_FORMAT_XBGR2101010;
+         break;
+      case PIPE_FORMAT_R10G10B10A2_UNORM:
+         image_format = __DRI_IMAGE_FORMAT_ABGR2101010;
+         break;
       default:
          image_format = __DRI_IMAGE_FORMAT_NONE;
          break;
@@ -503,6 +584,9 @@ dri2_allocate_buffer(__DRIscreen *sPriv,
       case 32:
          pf = PIPE_FORMAT_BGRA8888_UNORM;
          break;
+      case 30:
+         pf = PIPE_FORMAT_B10G10R10X2_UNORM;
+         break;
       case 24:
          pf = PIPE_FORMAT_BGRX8888_UNORM;
          break;
@@ -536,9 +620,9 @@ dri2_allocate_buffer(__DRIscreen *sPriv,
 
    memset(&whandle, 0, sizeof(whandle));
    if (screen->can_share_buffer)
-      whandle.type = DRM_API_HANDLE_TYPE_SHARED;
+      whandle.type = WINSYS_HANDLE_TYPE_SHARED;
    else
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
 
    screen->base.screen->resource_get_handle(screen->base.screen, NULL,
          buffer->resource, &whandle,
@@ -722,10 +806,11 @@ dri2_allocate_textures(struct dri_context *ctx,
          whandle.handle = buf->name;
          whandle.stride = buf->pitch;
          whandle.offset = 0;
+         whandle.modifier = DRM_FORMAT_MOD_INVALID;
          if (screen->can_share_buffer)
-            whandle.type = DRM_API_HANDLE_TYPE_SHARED;
+            whandle.type = WINSYS_HANDLE_TYPE_SHARED;
          else
-            whandle.type = DRM_API_HANDLE_TYPE_KMS;
+            whandle.type = WINSYS_HANDLE_TYPE_KMS;
          drawable->textures[statt] =
             screen->base.screen->resource_from_handle(screen->base.screen,
                   &templ, &whandle,
@@ -747,6 +832,7 @@ dri2_allocate_textures(struct dri_context *ctx,
             templ.bind = drawable->textures[statt]->bind &
                          ~(PIPE_BIND_SCANOUT | PIPE_BIND_SHARED);
             templ.nr_samples = drawable->stvis.samples;
+            templ.nr_storage_samples = drawable->stvis.samples;
 
             /* Try to reuse the resource.
              * (the other resource parameters should be constant)
@@ -798,10 +884,12 @@ dri2_allocate_textures(struct dri_context *ctx,
 
          if (drawable->stvis.samples > 1) {
             templ.nr_samples = drawable->stvis.samples;
+            templ.nr_storage_samples = drawable->stvis.samples;
             zsbuf = &drawable->msaa_textures[statt];
          }
          else {
             templ.nr_samples = 0;
+            templ.nr_storage_samples = 0;
             zsbuf = &drawable->textures[statt];
          }
 
@@ -983,7 +1071,7 @@ dri2_create_image_from_name(__DRIscreen *_screen,
    enum pipe_format pf;
 
    memset(&whandle, 0, sizeof(whandle));
-   whandle.type = DRM_API_HANDLE_TYPE_SHARED;
+   whandle.type = WINSYS_HANDLE_TYPE_SHARED;
    whandle.handle = name;
    whandle.modifier = DRM_FORMAT_MOD_INVALID;
 
@@ -1042,7 +1130,7 @@ dri2_create_image_from_fd(__DRIscreen *_screen,
          goto exit;
       }
 
-      whandles[i].type = DRM_API_HANDLE_TYPE_FD;
+      whandles[i].type = WINSYS_HANDLE_TYPE_FD;
       whandles[i].handle = (unsigned)fds[i];
       whandles[i].stride = (unsigned)strides[i];
       whandles[i].offset = (unsigned)offsets[i];
@@ -1182,35 +1270,35 @@ dri2_query_image(__DRIimage *image, int attrib, int *value)
 
    switch (attrib) {
    case __DRI_IMAGE_ATTRIB_STRIDE:
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
             NULL, image->texture, &whandle, usage))
          return GL_FALSE;
       *value = whandle.stride;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_OFFSET:
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
             NULL, image->texture, &whandle, usage))
          return GL_FALSE;
       *value = whandle.offset;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_HANDLE:
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
          NULL, image->texture, &whandle, usage))
          return GL_FALSE;
       *value = whandle.handle;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_NAME:
-      whandle.type = DRM_API_HANDLE_TYPE_SHARED;
+      whandle.type = WINSYS_HANDLE_TYPE_SHARED;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
          NULL, image->texture, &whandle, usage))
          return GL_FALSE;
       *value = whandle.handle;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_FD:
-      whandle.type= DRM_API_HANDLE_TYPE_FD;
+      whandle.type= WINSYS_HANDLE_TYPE_FD;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
             NULL, image->texture, &whandle, usage))
          return GL_FALSE;
@@ -1233,12 +1321,12 @@ dri2_query_image(__DRIimage *image, int attrib, int *value)
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_FOURCC:
       *value = convert_to_fourcc(image->dri_format);
-      return GL_TRUE;
+      return *value != -1;
    case __DRI_IMAGE_ATTRIB_NUM_PLANES:
       *value = 1;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_MODIFIER_UPPER:
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
       whandle.modifier = DRM_FORMAT_MOD_INVALID;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
             NULL, image->texture, &whandle, usage))
@@ -1248,7 +1336,7 @@ dri2_query_image(__DRIimage *image, int attrib, int *value)
       *value = (whandle.modifier >> 32) & 0xffffffff;
       return GL_TRUE;
    case __DRI_IMAGE_ATTRIB_MODIFIER_LOWER:
-      whandle.type = DRM_API_HANDLE_TYPE_KMS;
+      whandle.type = WINSYS_HANDLE_TYPE_KMS;
       whandle.modifier = DRM_FORMAT_MOD_INVALID;
       if (!image->texture->screen->resource_get_handle(image->texture->screen,
             NULL, image->texture, &whandle, usage))
@@ -1328,7 +1416,7 @@ dri2_from_names(__DRIscreen *screen, int width, int height, int format,
       return NULL;
 
    memset(&whandle, 0, sizeof(whandle));
-   whandle.type = DRM_API_HANDLE_TYPE_SHARED;
+   whandle.type = WINSYS_HANDLE_TYPE_SHARED;
    whandle.handle = names[0];
    whandle.stride = strides[0];
    whandle.offset = offsets[0];
@@ -1401,7 +1489,7 @@ dri2_query_dma_buf_formats(__DRIscreen *_screen, int max, int *formats,
                                        fourcc_to_pipe_format(
                                           fourcc_formats[i]),
                                        screen->target,
-                                       0, bind)) {
+                                       0, 0, bind)) {
          if (j < max)
             formats[j] = fourcc_formats[i];
          j++;
@@ -1422,7 +1510,8 @@ dri2_query_dma_buf_modifiers(__DRIscreen *_screen, int fourcc, int max,
    const unsigned usage = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
 
    if (pscreen->query_dmabuf_modifiers != NULL &&
-       pscreen->is_format_supported(pscreen, format, screen->target, 0, usage)) {
+       pscreen->is_format_supported(pscreen, format, screen->target, 0, 0,
+                                    usage)) {
       pscreen->query_dmabuf_modifiers(pscreen, format, max, modifiers,
                                       external_only, count);
       return true;
@@ -1696,7 +1785,7 @@ dri2_interop_export_object(__DRIcontext *_ctx,
       return MESA_GLINTEROP_INVALID_MIP_LEVEL;
 
    /* Validate the OpenGL object and get pipe_resource. */
-   mtx_lock(&ctx->Shared->Mutex);
+   simple_mtx_lock(&ctx->Shared->Mutex);
 
    if (target == GL_ARRAY_BUFFER) {
       /* Buffer objects.
@@ -1712,14 +1801,14 @@ dri2_interop_export_object(__DRIcontext *_ctx,
        *   the size of the buffer is 0."
        */
       if (!buf || buf->Size == 0) {
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_INVALID_OBJECT;
       }
 
       res = st_buffer_object(buf)->buffer;
       if (!res) {
          /* this shouldn't happen */
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_INVALID_OBJECT;
       }
 
@@ -1740,7 +1829,7 @@ dri2_interop_export_object(__DRIcontext *_ctx,
        *    object or if the width or height of renderbuffer is zero."
        */
       if (!rb || rb->Width == 0 || rb->Height == 0) {
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_INVALID_OBJECT;
       }
 
@@ -1749,7 +1838,7 @@ dri2_interop_export_object(__DRIcontext *_ctx,
        *    renderbuffer object."
        */
       if (rb->NumSamples > 1) {
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_INVALID_OPERATION;
       }
 
@@ -1759,7 +1848,7 @@ dri2_interop_export_object(__DRIcontext *_ctx,
        */
       res = st_renderbuffer(rb)->texture;
       if (!res) {
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_OUT_OF_RESOURCES;
       }
 
@@ -1789,36 +1878,21 @@ dri2_interop_export_object(__DRIcontext *_ctx,
           obj->Target != target ||
           !obj->_BaseComplete ||
           (in->miplevel > 0 && !obj->_MipmapComplete)) {
-         mtx_unlock(&ctx->Shared->Mutex);
-         return MESA_GLINTEROP_INVALID_OBJECT;
-      }
-
-      /* From OpenCL 2.0 SDK, clCreateFromGLTexture:
-       *   "CL_INVALID_MIP_LEVEL if miplevel is less than the value of
-       *    levelbase (for OpenGL implementations) or zero (for OpenGL ES
-       *    implementations); or greater than the value of q (for both OpenGL
-       *    and OpenGL ES). levelbase and q are defined for the texture in
-       *    section 3.8.10 (Texture Completeness) of the OpenGL 2.1
-       *    specification and section 3.7.10 of the OpenGL ES 2.0."
-       */
-      if (in->miplevel < obj->BaseLevel || in->miplevel > obj->_MaxLevel) {
-         mtx_unlock(&ctx->Shared->Mutex);
-         return MESA_GLINTEROP_INVALID_MIP_LEVEL;
-      }
-
-      if (!st_finalize_texture(ctx, st->pipe, obj, 0)) {
-         mtx_unlock(&ctx->Shared->Mutex);
-         return MESA_GLINTEROP_OUT_OF_RESOURCES;
-      }
-
-      res = st_get_texobj_resource(obj);
-      if (!res) {
-         /* Incomplete texture buffer object? This shouldn't really occur. */
-         mtx_unlock(&ctx->Shared->Mutex);
+         simple_mtx_unlock(&ctx->Shared->Mutex);
          return MESA_GLINTEROP_INVALID_OBJECT;
       }
 
       if (target == GL_TEXTURE_BUFFER) {
+         struct st_buffer_object *stBuf =
+            st_buffer_object(obj->BufferObject);
+
+         if (!stBuf || !stBuf->buffer) {
+            /* this shouldn't happen */
+            simple_mtx_unlock(&ctx->Shared->Mutex);
+            return MESA_GLINTEROP_INVALID_OBJECT;
+         }
+         res = stBuf->buffer;
+
          out->internal_format = obj->BufferObjectFormat;
          out->buf_offset = obj->BufferOffset;
          out->buf_size = obj->BufferSize == -1 ? obj->BufferObject->Size :
@@ -1826,6 +1900,31 @@ dri2_interop_export_object(__DRIcontext *_ctx,
 
          obj->BufferObject->UsageHistory |= USAGE_DISABLE_MINMAX_CACHE;
       } else {
+         /* From OpenCL 2.0 SDK, clCreateFromGLTexture:
+          *   "CL_INVALID_MIP_LEVEL if miplevel is less than the value of
+          *    levelbase (for OpenGL implementations) or zero (for OpenGL ES
+          *    implementations); or greater than the value of q (for both OpenGL
+          *    and OpenGL ES). levelbase and q are defined for the texture in
+          *    section 3.8.10 (Texture Completeness) of the OpenGL 2.1
+          *    specification and section 3.7.10 of the OpenGL ES 2.0."
+          */
+         if (in->miplevel < obj->BaseLevel || in->miplevel > obj->_MaxLevel) {
+            simple_mtx_unlock(&ctx->Shared->Mutex);
+            return MESA_GLINTEROP_INVALID_MIP_LEVEL;
+         }
+
+         if (!st_finalize_texture(ctx, st->pipe, obj, 0)) {
+            simple_mtx_unlock(&ctx->Shared->Mutex);
+            return MESA_GLINTEROP_OUT_OF_RESOURCES;
+         }
+
+         res = st_get_texobj_resource(obj);
+         if (!res) {
+            /* Incomplete texture buffer object? This shouldn't really occur. */
+            simple_mtx_unlock(&ctx->Shared->Mutex);
+            return MESA_GLINTEROP_INVALID_OBJECT;
+         }
+
          out->internal_format = obj->Image[0][0]->InternalFormat;
          out->view_minlevel = obj->MinLevel;
          out->view_numlevels = obj->NumLevels;
@@ -1850,11 +1949,11 @@ dri2_interop_export_object(__DRIcontext *_ctx,
    }
 
    memset(&whandle, 0, sizeof(whandle));
-   whandle.type = DRM_API_HANDLE_TYPE_FD;
+   whandle.type = WINSYS_HANDLE_TYPE_FD;
 
    success = screen->resource_get_handle(screen, st->pipe, res, &whandle,
                                          usage);
-   mtx_unlock(&ctx->Shared->Mutex);
+   simple_mtx_unlock(&ctx->Shared->Mutex);
 
    if (!success)
       return MESA_GLINTEROP_OUT_OF_HOST_MEMORY;

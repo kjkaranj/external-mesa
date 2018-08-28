@@ -141,6 +141,28 @@ _mesa_hash_table_create(void *mem_ctx,
    return ht;
 }
 
+struct hash_table *
+_mesa_hash_table_clone(struct hash_table *src, void *dst_mem_ctx)
+{
+   struct hash_table *ht;
+
+   ht = ralloc(dst_mem_ctx, struct hash_table);
+   if (ht == NULL)
+      return NULL;
+
+   memcpy(ht, src, sizeof(struct hash_table));
+
+   ht->table = ralloc_array(ht, struct hash_entry, ht->size);
+   if (ht->table == NULL) {
+      ralloc_free(ht);
+      return NULL;
+   }
+
+   memcpy(ht->table, src->table, ht->size * sizeof(struct hash_entry));
+
+   return ht;
+}
+
 /**
  * Frees the given hash table.
  *
@@ -396,6 +418,15 @@ _mesa_hash_table_remove(struct hash_table *ht,
    entry->key = ht->deleted_key;
    ht->entries--;
    ht->deleted_entries++;
+}
+
+/**
+ * Removes the entry with the corresponding key, if exists.
+ */
+void _mesa_hash_table_remove_key(struct hash_table *ht,
+                                 const void *key)
+{
+   _mesa_hash_table_remove(ht, _mesa_hash_table_search(ht, key));
 }
 
 /**

@@ -25,6 +25,7 @@
 
 from __future__ import print_function
 import ast
+from collections import OrderedDict
 import itertools
 import struct
 import sys
@@ -33,6 +34,14 @@ import re
 import traceback
 
 from nir_opcodes import opcodes
+
+if sys.version_info < (3, 0):
+    integer_types = (int, long)
+    string_type = unicode
+
+else:
+    integer_types = (int, )
+    string_type = str
 
 _type_re = re.compile(r"(?P<type>int|uint|bool|float)?(?P<bits>\d+)?")
 
@@ -55,7 +64,7 @@ class VarSet(object):
    def __getitem__(self, name):
       if name not in self.names:
          assert not self.immutable, "Unknown replacement variable: " + name
-         self.names[name] = self.ids.next()
+         self.names[name] = next(self.ids)
 
       return self.names[name]
 
@@ -65,20 +74,23 @@ class VarSet(object):
 class Value(object):
    @staticmethod
    def create(val, name_base, varset):
+      if isinstance(val, bytes):
+         val = val.decode('utf-8')
+
       if isinstance(val, tuple):
          return Expression(val, name_base, varset)
       elif isinstance(val, Expression):
          return val
-      elif isinstance(val, (str, unicode)):
+      elif isinstance(val, string_type):
          return Variable(val, name_base, varset)
-      elif isinstance(val, (bool, int, long, float)):
+      elif isinstance(val, (bool, float) + integer_types):
          return Constant(val, name_base)
 
    __template = mako.template.Template("""
 static const ${val.c_type} ${val.name} = {
    { ${val.type_enum}, ${val.bit_size} },
 % if isinstance(val, Constant):
-   ${val.type()}, { ${hex(val)} /* ${val.value} */ },
+   ${val.type()}, { ${val.hex()} /* ${val.value} */ },
 % elif isinstance(val, Variable):
    ${val.index}, /* ${val.var_name} */
    ${'true' if val.is_constant else 'false'},
@@ -132,20 +144,29 @@ class Constant(Value):
          assert self.bit_size == 0 or self.bit_size == 32
          self.bit_size = 32
 
-   def __hex__(self):
+   def hex(self):
       if isinstance(self.value, (bool)):
          return 'NIR_TRUE' if self.value else 'NIR_FALSE'
-      if isinstance(self.value, (int, long)):
+      if isinstance(self.value, integer_types):
          return hex(self.value)
       elif isinstance(self.value, float):
-         return hex(struct.unpack('Q', struct.pack('d', self.value))[0])
+         i = struct.unpack('Q', struct.pack('d', self.value))[0]
+         h = hex(i)
+
+         # On Python 2 this 'L' suffix is automatically added, but not on Python 3
+         # Adding it explicitly makes the generated file identical, regardless
+         # of the Python version running this script.
+         if h[-1] != 'L' and i > sys.maxsize:
+            h += 'L'
+
+         return h
       else:
          assert False
 
    def type(self):
       if isinstance(self.value, (bool)):
          return "nir_type_bool32"
-      elif isinstance(self.value, (int, long)):
+      elif isinstance(self.value, integer_types):
          return "nir_type_int"
       elif isinstance(self.value, float):
          return "nir_type_float"
@@ -467,7 +488,7 @@ condition_list = ['true']
 
 class SearchAndReplace(object):
    def __init__(self, transform):
-      self.id = _optimization_ids.next()
+      self.id = next(_optimization_ids)
 
       search = transform[0]
       replace = transform[1]
@@ -511,7 +532,7 @@ struct transform {
 
 #endif
 
-% for (opcode, xform_list) in xform_dict.iteritems():
+% for (opcode, xform_list) in xform_dict.items():
 % for xform in xform_list:
    ${xform.search.render()}
    ${xform.replace.render()}
@@ -601,7 +622,7 @@ ${pass_name}(nir_shader *shader)
 
 class AlgebraicPass(object):
    def __init__(self, pass_name, transforms):
-      self.xform_dict = {}
+      self.xform_dict = OrderedDict()
       self.pass_name = pass_name
 
       error = False

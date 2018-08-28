@@ -54,6 +54,7 @@
 #include "ast.h"
 #include "compiler/glsl_types.h"
 #include "util/hash_table.h"
+#include "main/mtypes.h"
 #include "main/macros.h"
 #include "main/shaderobj.h"
 #include "ir.h"
@@ -61,7 +62,6 @@
 #include "builtin_functions.h"
 
 using namespace ir_builder;
-
 static void
 detect_conflicting_assignments(struct _mesa_glsl_parse_state *state,
                                exec_list *instructions);
@@ -1108,12 +1108,17 @@ do_comparison(void *mem_ctx, int operation, ir_rvalue *op0, ir_rvalue *op1)
 
    switch (op0->type->base_type) {
    case GLSL_TYPE_FLOAT:
+   case GLSL_TYPE_FLOAT16:
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_BOOL:
    case GLSL_TYPE_DOUBLE:
    case GLSL_TYPE_UINT64:
    case GLSL_TYPE_INT64:
+   case GLSL_TYPE_UINT16:
+   case GLSL_TYPE_INT16:
+   case GLSL_TYPE_UINT8:
+   case GLSL_TYPE_INT8:
       return new(mem_ctx) ir_expression(operation, op0, op1);
 
    case GLSL_TYPE_ARRAY: {
@@ -1319,6 +1324,124 @@ ast_expression::set_is_lhs(bool new_value)
       this->subexpressions[0]->set_is_lhs(new_value);
 }
 
+#ifdef MESA_BBOX_OPT
+static bool
+is_simple_shader(exec_list *instructions, ast_expression *simple_ast_root,
+                 struct _mesa_glsl_parse_state *state)
+{
+   ast_expression * subex0 = simple_ast_root->subexpressions[0];
+   ast_expression * subex1 = simple_ast_root->subexpressions[1];
+
+   char temp_identifier[100];
+
+   subex0->set_is_lhs(true);
+
+   if (subex1->oper == ast_mul)
+   {
+      ir_rvalue *rhsParts[3];
+      rhsParts[0] = subex1->subexpressions[0]->hir(instructions, state);
+      rhsParts[1] = subex1->subexpressions[1]->hir(instructions, state);
+
+      if (rhsParts[0]->type->gl_type == GL_FLOAT_MAT4 &&
+          rhsParts[1]->type->gl_type == GL_FLOAT_VEC4) {
+         foreach_list_typed (ast_node, ast, link,
+                             &subex1->subexpressions[1]->expressions) {
+            if (((ast_expression *)ast)->oper != ast_identifier &&
+               (((ast_expression *)ast)->oper != ast_int_constant) &&
+               (((ast_expression *)ast)->oper != ast_float_constant)) {
+               return false;
+            }
+            if (((ast_expression *)ast)->oper == ast_identifier &&
+                ((ast_expression *)ast)->primary_expression.identifier) {
+                   strncpy((char *)state->stateVertPosition,
+                   ((ast_expression *)ast)->primary_expression.identifier,
+                strlen(((ast_expression *)ast)->primary_expression.identifier));
+            }
+         }
+      }
+      if (subex0->oper == ast_identifier) {
+         if (!strcmp(subex0->primary_expression.identifier,"gl_Position")) {
+            if(subex0 && subex0->primary_expression.identifier) {
+               strncpy((char *)temp_identifier,
+                    subex0->primary_expression.identifier,
+                    strlen(subex0->primary_expression.identifier));
+            } else {
+              return false;
+            }
+            if(subex1 && subex1->subexpressions[0] &&
+              subex1->subexpressions[0]->primary_expression.identifier) {
+                strncpy((char *)state->stateMVP,
+                   subex1->subexpressions[0]->primary_expression.identifier,
+            strlen(subex1->subexpressions[0]->primary_expression.identifier));
+            } else {
+              return false;
+            }
+
+            return true;
+         } else {
+            if(subex0 && subex0->primary_expression.identifier) {
+               strncpy((char *)temp_identifier,
+                  subex0->primary_expression.identifier,
+                  strlen(subex0->primary_expression.identifier));
+            } else {
+              return true;
+            }
+
+            if (subex1->subexpressions[0]->oper == ast_identifier) {
+               if(subex1 && subex1->subexpressions[0] &&
+                  subex1->subexpressions[0]->primary_expression.identifier) {
+                     strncpy((char *)state->stateMVP,
+                     subex1->subexpressions[0]->primary_expression.identifier,
+              strlen(subex1->subexpressions[0]->primary_expression.identifier));
+               } else {
+                  return true;
+               }
+            }
+            return false; //Return false to trigger further parsing.
+         }
+      } else {
+        return false;
+      }
+   } else {
+      if (subex0->primary_expression.identifier != NULL)
+        if (!strcmp(subex0->primary_expression.identifier,"gl_Position") &&
+          (strlen(temp_identifier) > 0)) { //gl_position = temp;
+           if (subex1->oper == ast_identifier) {
+              if (!strcmp((char *)temp_identifier,
+                 subex1->primary_expression.identifier)) {
+                   return true;
+              }
+           } else {
+              return false;
+           }
+        }
+   }
+   return false;
+}
+/*
+ * Function to check if LHS of assign is an input variable Eg: in_position
+ */
+
+static bool
+is_attribute(struct _mesa_glsl_parse_state *state)
+{
+   ir_variable *const var = state->symbols->get_variable(state->stateVertPosition);
+   ir_rvalue *result = NULL;
+   void *ctx = state;
+   if (var != NULL)
+   {
+         result = new(ctx) ir_dereference_variable(var);
+         (void)result;
+         if (var->data.mode ==  ir_var_shader_in)
+             return true;
+
+   }
+
+   return false;
+
+}
+#endif //MESA_BBOX_OPT
+
 ir_rvalue *
 ast_expression::do_hir(exec_list *instructions,
                        struct _mesa_glsl_parse_state *state,
@@ -1391,10 +1514,58 @@ ast_expression::do_hir(exec_list *instructions,
 
    switch (this->oper) {
    case ast_aggregate:
-      assert(!"ast_aggregate: Should never get here.");
-      break;
+      unreachable("ast_aggregate: Should never get here.");
 
    case ast_assign: {
+#ifdef MESA_BBOX_OPT
+      if (state->stage == MESA_SHADER_VERTEX &&
+          !state->state_bbox_simple_shader &&
+          is_simple_shader(instructions,this,state) &&
+          !state->state_shader_analysis_complete)
+      {
+         state->state_bbox_simple_shader = true;
+      }
+
+      if (state->state_bbox_simple_shader &&
+          !state->state_shader_analysis_complete) {
+         if (!is_attribute(state)) {
+            if ((ir_dereference_variable *)op[0] != NULL &&
+                ((ir_dereference_variable *)op[0])->var->name != NULL &&
+                strlen(state->stateVertPosition) != 0)
+            if (!strcmp(((ir_dereference_variable *)op[0])->var->name,
+                          state->stateVertPosition) ) {
+               if (((ir_instruction *)op[0])->ir_type == ir_type_variable ||
+                    ((ir_instruction *)op[0])->ir_type ==
+                                      ir_type_dereference_variable &&
+                    (ir_dereference_variable *)op[1] != NULL &&
+                    ((ir_dereference_variable *)op[1])->ir_type ==
+                     ir_type_dereference_variable) {
+                  if ((((ir_instruction *)op[1])->ir_type == ir_type_variable ||
+                      ((ir_instruction *)op[1])->ir_type ==
+                        ir_type_dereference_variable) &&
+                       ((ir_dereference_variable *)op[1])->var->name) {
+                     strncpy((char *)state->stateVertPosition,
+                           (char *)((ir_dereference_variable *)op[1])->var->name,
+                        strlen(((ir_dereference_variable *)op[1])->var->name));
+                        state->state_shader_analysis_complete = true;
+                  }
+               }
+               else {
+                  state->state_bbox_simple_shader = false;
+                  state->state_shader_analysis_complete = true;
+               }
+            }
+            else {
+               state->state_bbox_simple_shader = false;
+               state->state_shader_analysis_complete = true;
+
+            }
+         }
+         else {
+            state->state_shader_analysis_complete = true;
+         }
+      }
+#endif //MESA_BBOX_OPT
       this->subexpressions[0]->set_is_lhs(true);
       op[0] = this->subexpressions[0]->hir(instructions, state);
       op[1] = this->subexpressions[1]->hir(instructions, state);
@@ -1586,7 +1757,6 @@ ast_expression::do_hir(exec_list *instructions,
 
       if (rhs_instructions.is_empty()) {
          result = new(ctx) ir_expression(ir_binop_logic_and, op[0], op[1]);
-         type = result->type;
       } else {
          ir_variable *const tmp = new(ctx) ir_variable(glsl_type::bool_type,
                                                        "and_tmp",
@@ -1608,7 +1778,6 @@ ast_expression::do_hir(exec_list *instructions,
          stmt->else_instructions.push_tail(else_assign);
 
          result = new(ctx) ir_dereference_variable(tmp);
-         type = tmp->type;
       }
       break;
    }
@@ -1622,7 +1791,6 @@ ast_expression::do_hir(exec_list *instructions,
 
       if (rhs_instructions.is_empty()) {
          result = new(ctx) ir_expression(ir_binop_logic_or, op[0], op[1]);
-         type = result->type;
       } else {
          ir_variable *const tmp = new(ctx) ir_variable(glsl_type::bool_type,
                                                        "or_tmp",
@@ -1644,7 +1812,6 @@ ast_expression::do_hir(exec_list *instructions,
          stmt->else_instructions.push_tail(else_assign);
 
          result = new(ctx) ir_dereference_variable(tmp);
-         type = tmp->type;
       }
       break;
    }
@@ -1849,9 +2016,11 @@ ast_expression::do_hir(exec_list *instructions,
        *   expressions; such use results in a compile-time error."
        */
       if (type->contains_opaque()) {
-         _mesa_glsl_error(&loc, state, "opaque variables cannot be operands "
-                          "of the ?: operator");
-         error_emitted = true;
+         if (!(state->has_bindless() && (type->is_image() || type->is_sampler()))) {
+            _mesa_glsl_error(&loc, state, "variables of type %s cannot be "
+                             "operands of the ?: operator", type->name);
+            error_emitted = true;
+         }
       }
 
       ir_constant *cond_val = op[0]->constant_expression_value(ctx);
@@ -1925,6 +2094,11 @@ ast_expression::do_hir(exec_list *instructions,
 
       error_emitted = op[0]->type->is_error() || op[1]->type->is_error();
 
+      if (error_emitted) {
+         result = ir_rvalue::error_value(ctx);
+         break;
+      }
+
       type = arithmetic_result_type(op[0], op[1], false, state, & loc);
 
       ir_rvalue *temp_rhs;
@@ -1972,15 +2146,13 @@ ast_expression::do_hir(exec_list *instructions,
    }
 
    case ast_unsized_array_dim:
-      assert(!"ast_unsized_array_dim: Should never get here.");
-      break;
+      unreachable("ast_unsized_array_dim: Should never get here.");
 
    case ast_function_call:
       /* Should *NEVER* get here.  ast_function_call should always be handled
        * by ast_function_expression::hir.
        */
-      assert(0);
-      break;
+      unreachable("ast_function_call: handled elsewhere ");
 
    case ast_identifier: {
       /* ast_identifier can appear several places in a full abstract syntax
@@ -2009,6 +2181,20 @@ ast_expression::do_hir(exec_list *instructions,
             _mesa_glsl_warning(&loc, state, "`%s' used uninitialized",
                                this->primary_expression.identifier);
          }
+
+         /* From the EXT_shader_framebuffer_fetch spec:
+          *
+          *   "Unless the GL_EXT_shader_framebuffer_fetch extension has been
+          *    enabled in addition, it's an error to use gl_LastFragData if it
+          *    hasn't been explicitly redeclared with layout(noncoherent)."
+          */
+         if (var->data.fb_fetch_output && var->data.memory_coherent &&
+             !state->EXT_shader_framebuffer_fetch_enable) {
+            _mesa_glsl_error(&loc, state,
+                             "invalid use of framebuffer fetch output not "
+                             "qualified with layout(noncoherent)");
+         }
+
       } else {
          _mesa_glsl_error(& loc, state, "`%s' undeclared",
                           this->primary_expression.identifier);
@@ -3884,6 +4070,16 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
 
    if (state->has_bindless())
       apply_bindless_qualifier_to_variable(qual, var, state, loc);
+
+   if (qual->flags.q.pixel_interlock_ordered ||
+       qual->flags.q.pixel_interlock_unordered ||
+       qual->flags.q.sample_interlock_ordered ||
+       qual->flags.q.sample_interlock_unordered) {
+      _mesa_glsl_error(loc, state, "interlock layout qualifiers: "
+                       "pixel_interlock_ordered, pixel_interlock_unordered, "
+                       "sample_interlock_ordered and sample_interlock_unordered, "
+                       "only valid in fragment shader input layout declaration.");
+   }
 }
 
 static void
@@ -3995,8 +4191,41 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
    else if (qual->flags.q.shared_storage)
       var->data.mode = ir_var_shader_shared;
 
-   var->data.fb_fetch_output = state->stage == MESA_SHADER_FRAGMENT &&
-                               qual->flags.q.in && qual->flags.q.out;
+   if (!is_parameter && state->has_framebuffer_fetch() &&
+       state->stage == MESA_SHADER_FRAGMENT) {
+      if (state->is_version(130, 300))
+         var->data.fb_fetch_output = qual->flags.q.in && qual->flags.q.out;
+      else
+         var->data.fb_fetch_output = (strcmp(var->name, "gl_LastFragData") == 0);
+   }
+
+   if (var->data.fb_fetch_output) {
+      var->data.assigned = true;
+      var->data.memory_coherent = !qual->flags.q.non_coherent;
+
+      /* From the EXT_shader_framebuffer_fetch spec:
+       *
+       *   "It is an error to declare an inout fragment output not qualified
+       *    with layout(noncoherent) if the GL_EXT_shader_framebuffer_fetch
+       *    extension hasn't been enabled."
+       */
+      if (var->data.memory_coherent &&
+          !state->EXT_shader_framebuffer_fetch_enable)
+         _mesa_glsl_error(loc, state,
+                          "invalid declaration of framebuffer fetch output not "
+                          "qualified with layout(noncoherent)");
+
+   } else {
+      /* From the EXT_shader_framebuffer_fetch spec:
+       *
+       *   "Fragment outputs declared inout may specify the following layout
+       *    qualifier: [...] noncoherent"
+       */
+      if (qual->flags.q.non_coherent)
+         _mesa_glsl_error(loc, state,
+                          "invalid layout(noncoherent) qualifier not part of "
+                          "framebuffer fetch output declaration");
+   }
 
    if (!is_parameter && is_varying_var(var, state->stage)) {
       /* User-defined ins/outs are not permitted in compute shaders. */
@@ -4077,30 +4306,8 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
       }
    }
 
-   if (state->all_invariant && (state->current_function == NULL)) {
-      switch (state->stage) {
-      case MESA_SHADER_VERTEX:
-         if (var->data.mode == ir_var_shader_out)
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_TESS_CTRL:
-      case MESA_SHADER_TESS_EVAL:
-      case MESA_SHADER_GEOMETRY:
-         if ((var->data.mode == ir_var_shader_in)
-             || (var->data.mode == ir_var_shader_out))
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_FRAGMENT:
-         if (var->data.mode == ir_var_shader_in)
-            var->data.invariant = true;
-         break;
-      case MESA_SHADER_COMPUTE:
-         /* Invariance isn't meaningful in compute shaders. */
-         break;
-      default:
-         break;
-      }
-   }
+   if (state->all_invariant && var->data.mode == ir_var_shader_out)
+      var->data.invariant = true;
 
    var->data.interpolation =
       interpret_interpolation_qualifier(qual, var->type,
@@ -4286,8 +4493,12 @@ get_variable_being_redeclared(ir_variable **var_ptr, YYLTYPE loc,
        *   "By default, gl_LastFragData is declared with the mediump precision
        *    qualifier. This can be changed by redeclaring the corresponding
        *    variables with the desired precision qualifier."
+       *
+       *   "Fragment shaders may specify the following layout qualifier only for
+       *    redeclaring the built-in gl_LastFragData array [...]: noncoherent"
        */
       earlier->data.precision = var->data.precision;
+      earlier->data.memory_coherent = var->data.memory_coherent;
 
    } else if (earlier->data.how_declared == ir_var_declared_implicitly &&
               state->allow_builtin_variable_redeclaration) {
@@ -5260,7 +5471,7 @@ ast_declarator_list::hir(exec_list *instructions,
                      if (var->type->fields.structure[i].type->is_array() ||
                          var->type->fields.structure[i].type->is_record())
                         _mesa_glsl_error(&loc, state,
-                                         "fragement shader input cannot have "
+                                         "fragment shader input cannot have "
                                          "a struct that contains an "
                                          "array or struct");
                   }

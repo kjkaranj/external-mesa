@@ -34,6 +34,7 @@
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_info.h"
 #include "tgsi/tgsi_scan.h"
+#include "tgsi/tgsi_from_mesa.h"
 
 #define SWIZ(X, Y, Z, W) (unsigned[4]){      \
       TGSI_SWIZZLE_##X,                      \
@@ -141,79 +142,6 @@ tgsi_varying_semantic_to_slot(unsigned semantic, unsigned index)
       fprintf(stderr, "Bad TGSI semantic: %d/%d\n", semantic, index);
       abort();
    }
-}
-
-/* Temporary helper to remap back to TGSI style semantic name/index
- * values, for use in drivers that haven't been converted to using
- * VARYING_SLOT_
- */
-void
-varying_slot_to_tgsi_semantic(gl_varying_slot slot,
-                              unsigned *semantic_name, unsigned *semantic_index)
-{
-   static const unsigned map[][2] = {
-      [VARYING_SLOT_POS] = { TGSI_SEMANTIC_POSITION, 0 },
-      [VARYING_SLOT_COL0] = { TGSI_SEMANTIC_COLOR, 0 },
-      [VARYING_SLOT_COL1] = { TGSI_SEMANTIC_COLOR, 1 },
-      [VARYING_SLOT_BFC0] = { TGSI_SEMANTIC_BCOLOR, 0 },
-      [VARYING_SLOT_BFC1] = { TGSI_SEMANTIC_BCOLOR, 1 },
-      [VARYING_SLOT_FOGC] = { TGSI_SEMANTIC_FOG, 0 },
-      [VARYING_SLOT_PSIZ] = { TGSI_SEMANTIC_PSIZE, 0 },
-      [VARYING_SLOT_FACE] = { TGSI_SEMANTIC_FACE, 0 },
-      [VARYING_SLOT_EDGE] = { TGSI_SEMANTIC_EDGEFLAG, 0 },
-      [VARYING_SLOT_PRIMITIVE_ID] = { TGSI_SEMANTIC_PRIMID, 0 },
-      [VARYING_SLOT_CLIP_DIST0] = { TGSI_SEMANTIC_CLIPDIST, 0 },
-      [VARYING_SLOT_CLIP_DIST1] = { TGSI_SEMANTIC_CLIPDIST, 1 },
-      [VARYING_SLOT_CLIP_VERTEX] = { TGSI_SEMANTIC_CLIPVERTEX, 0 },
-      [VARYING_SLOT_PNTC] = { TGSI_SEMANTIC_PCOORD, 0 },
-      [VARYING_SLOT_VIEWPORT] = { TGSI_SEMANTIC_VIEWPORT_INDEX, 0 },
-      [VARYING_SLOT_LAYER] = { TGSI_SEMANTIC_LAYER, 0 },
-   };
-
-   if (slot >= VARYING_SLOT_VAR0) {
-      *semantic_name = TGSI_SEMANTIC_GENERIC;
-      *semantic_index = slot - VARYING_SLOT_VAR0;
-      return;
-   }
-
-   if (slot >= VARYING_SLOT_TEX0 && slot <= VARYING_SLOT_TEX7) {
-      *semantic_name = TGSI_SEMANTIC_TEXCOORD;
-      *semantic_index = slot - VARYING_SLOT_TEX0;
-      return;
-   }
-
-   if (slot >= ARRAY_SIZE(map)) {
-      fprintf(stderr, "Unknown varying slot %d\n", slot);
-      abort();
-   }
-
-   *semantic_name = map[slot][0];
-   *semantic_index = map[slot][1];
-}
-
-/* Temporary helper to remap back to TGSI style semantic name/index
- * values, for use in drivers that haven't been converted to using
- * FRAG_RESULT_
- */
-void
-frag_result_to_tgsi_semantic(gl_frag_result slot,
-                             unsigned *semantic_name, unsigned *semantic_index)
-{
-   static const unsigned map[][2] = {
-      [FRAG_RESULT_DEPTH] = { TGSI_SEMANTIC_POSITION, 0 },
-      [FRAG_RESULT_COLOR] = { TGSI_SEMANTIC_COLOR, -1 },
-      [FRAG_RESULT_DATA0 + 0] = { TGSI_SEMANTIC_COLOR, 0 },
-      [FRAG_RESULT_DATA0 + 1] = { TGSI_SEMANTIC_COLOR, 1 },
-      [FRAG_RESULT_DATA0 + 2] = { TGSI_SEMANTIC_COLOR, 2 },
-      [FRAG_RESULT_DATA0 + 3] = { TGSI_SEMANTIC_COLOR, 3 },
-      [FRAG_RESULT_DATA0 + 4] = { TGSI_SEMANTIC_COLOR, 4 },
-      [FRAG_RESULT_DATA0 + 5] = { TGSI_SEMANTIC_COLOR, 5 },
-      [FRAG_RESULT_DATA0 + 6] = { TGSI_SEMANTIC_COLOR, 6 },
-      [FRAG_RESULT_DATA0 + 7] = { TGSI_SEMANTIC_COLOR, 7 },
-   };
-
-   *semantic_name = map[slot][0];
-   *semantic_index = map[slot][1];
 }
 
 static nir_ssa_def *
@@ -486,27 +414,15 @@ ttn_src_for_indirect(struct ttn_compile *c, struct tgsi_ind_register *indirect);
 /* generate either a constant or indirect deref chain for accessing an
  * array variable.
  */
-static nir_deref_var *
-ttn_array_deref(struct ttn_compile *c, nir_intrinsic_instr *instr,
-                nir_variable *var, unsigned offset,
+static nir_deref_instr *
+ttn_array_deref(struct ttn_compile *c, nir_variable *var, unsigned offset,
                 struct tgsi_ind_register *indirect)
 {
-   nir_deref_var *deref = nir_deref_var_create(instr, var);
-   nir_deref_array *arr = nir_deref_array_create(deref);
-
-   arr->base_offset = offset;
-   arr->deref.type = glsl_get_array_element(var->type);
-
-   if (indirect) {
-      arr->deref_array_type = nir_deref_array_type_indirect;
-      arr->indirect = nir_src_for_ssa(ttn_src_for_indirect(c, indirect));
-   } else {
-      arr->deref_array_type = nir_deref_array_type_direct;
-   }
-
-   deref->deref.child = &arr->deref;
-
-   return deref;
+   nir_deref_instr *deref = nir_build_deref_var(&c->build, var);
+   nir_ssa_def *index = nir_imm_int(&c->build, offset);
+   if (indirect)
+      index = nir_iadd(&c->build, index, ttn_src_for_indirect(c, indirect));
+   return nir_build_deref_array(&c->build, deref, index);
 }
 
 static nir_src
@@ -525,18 +441,10 @@ ttn_src_for_file_and_index(struct ttn_compile *c, unsigned file, unsigned index,
       if (c->temp_regs[index].var) {
          unsigned offset = c->temp_regs[index].offset;
          nir_variable *var = c->temp_regs[index].var;
-         nir_intrinsic_instr *load;
+         nir_ssa_def *load = nir_load_deref(&c->build,
+               ttn_array_deref(c, var, offset, indirect));
 
-         load = nir_intrinsic_instr_create(b->shader,
-                                           nir_intrinsic_load_var);
-         load->num_components = 4;
-         load->variables[0] = ttn_array_deref(c, load, var, offset, indirect);
-         nir_ssa_dest_init(&load->instr, &load->dest,
-                           4, 32, NULL);
-         nir_builder_instr_insert(b, &load->instr);
-
-         src = nir_src_for_ssa(&load->dest.ssa);
-
+         src = nir_src_for_ssa(load);
       } else {
          assert(!indirect);
          src.reg.reg = c->temp_regs[index].reg;
@@ -772,8 +680,8 @@ ttn_get_src(struct ttn_compile *c, struct tgsi_full_src_register *tgsi_fsrc,
 {
    nir_builder *b = &c->build;
    struct tgsi_src_register *tgsi_src = &tgsi_fsrc->Register;
-   unsigned tgsi_opcode = c->token->FullInstruction.Instruction.Opcode;
-   unsigned tgsi_src_type = tgsi_opcode_infer_src_type(tgsi_opcode, src_idx);
+   enum tgsi_opcode opcode = c->token->FullInstruction.Instruction.Opcode;
+   unsigned tgsi_src_type = tgsi_opcode_infer_src_type(opcode, src_idx);
    bool src_is_float = !(tgsi_src_type == TGSI_TYPE_SIGNED ||
                          tgsi_src_type == TGSI_TYPE_UNSIGNED);
    nir_alu_src src;
@@ -1828,17 +1736,11 @@ ttn_emit_instruction(struct ttn_compile *c)
    if (var) {
       unsigned index = tgsi_dst->Register.Index;
       unsigned offset = c->temp_regs[index].offset;
-      nir_intrinsic_instr *store =
-         nir_intrinsic_instr_create(b->shader, nir_intrinsic_store_var);
       struct tgsi_ind_register *indirect = tgsi_dst->Register.Indirect ?
                                            &tgsi_dst->Indirect : NULL;
-
-      store->num_components = 4;
-      nir_intrinsic_set_write_mask(store, dest.write_mask);
-      store->variables[0] = ttn_array_deref(c, store, var, offset, indirect);
-      store->src[0] = nir_src_for_reg(dest.dest.reg.reg);
-
-      nir_builder_instr_insert(b, &store->instr);
+      nir_src val = nir_src_for_reg(dest.dest.reg.reg);
+      nir_store_deref(b, ttn_array_deref(c, var, offset, indirect),
+                      nir_ssa_for_src(b, val, 4), dest.write_mask);
    }
 }
 
@@ -1884,21 +1786,6 @@ ttn_add_output_stores(struct ttn_compile *c)
          store->src[1] = nir_src_for_ssa(nir_imm_int(b, 0));
          nir_builder_instr_insert(b, &store->instr);
       }
-   }
-}
-
-static gl_shader_stage
-tgsi_processor_to_shader_stage(unsigned processor)
-{
-   switch (processor) {
-   case PIPE_SHADER_FRAGMENT:  return MESA_SHADER_FRAGMENT;
-   case PIPE_SHADER_VERTEX:    return MESA_SHADER_VERTEX;
-   case PIPE_SHADER_GEOMETRY:  return MESA_SHADER_GEOMETRY;
-   case PIPE_SHADER_TESS_CTRL: return MESA_SHADER_TESS_CTRL;
-   case PIPE_SHADER_TESS_EVAL: return MESA_SHADER_TESS_EVAL;
-   case PIPE_SHADER_COMPUTE:   return MESA_SHADER_COMPUTE;
-   default:
-      unreachable("invalid TGSI processor");
    }
 }
 

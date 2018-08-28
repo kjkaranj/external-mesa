@@ -70,6 +70,16 @@ DRI_CONF_OPT_BEGIN_V(command_buffer_size,int,def, # min ":" # max ) \
         DRI_CONF_DESC(de,"Grösse des Befehlspuffers (in KB)") \
 DRI_CONF_OPT_END
 
+#define DRI_CONF_MAX_TEXTURE_UNITS(def,min,max) \
+DRI_CONF_OPT_BEGIN_V(texture_units,int,def, # min ":" # max ) \
+        DRI_CONF_DESC(en,"Number of texture units used") \
+DRI_CONF_OPT_END
+
+#define DRI_CONF_HYPERZ(def) \
+DRI_CONF_OPT_BEGIN_B(hyperz, def) \
+        DRI_CONF_DESC(en,"Use HyperZ to boost performance") \
+DRI_CONF_OPT_END
+
 #if defined(RADEON_R100)	/* R100 */
 static const __DRIconfigOptionsExtension radeon_config_options = {
    .base = { __DRI_CONFIG_OPTIONS, 1 },
@@ -90,13 +100,16 @@ DRI_CONF_BEGIN
         DRI_CONF_ROUND_MODE(DRI_CONF_ROUND_TRUNC)
         DRI_CONF_DITHER_MODE(DRI_CONF_DITHER_XERRORDIFF)
     DRI_CONF_SECTION_END
-    DRI_CONF_SECTION_DEBUG
-        DRI_CONF_NO_RAST("false")
-    DRI_CONF_SECTION_END
 DRI_CONF_END
 };
 
 #elif defined(RADEON_R200)
+
+#define DRI_CONF_TEXTURE_BLEND_QUALITY(def,range) \
+DRI_CONF_OPT_BEGIN_V(texture_blend_quality,float,def,range) \
+       DRI_CONF_DESC(en,"Texture filtering quality vs. speed, AKA “brilinear” texture filtering") \
+DRI_CONF_OPT_END
+
 static const __DRIconfigOptionsExtension radeon_config_options = {
    .base = { __DRI_CONFIG_OPTIONS, 1 },
    .xml =
@@ -116,9 +129,6 @@ DRI_CONF_BEGIN
         DRI_CONF_ROUND_MODE(DRI_CONF_ROUND_TRUNC)
         DRI_CONF_DITHER_MODE(DRI_CONF_DITHER_XERRORDIFF)
         DRI_CONF_TEXTURE_BLEND_QUALITY(1.0,"0.0:1.0")
-    DRI_CONF_SECTION_END
-    DRI_CONF_SECTION_DEBUG
-        DRI_CONF_NO_RAST("false")
     DRI_CONF_SECTION_END
 DRI_CONF_END
 };
@@ -804,7 +814,7 @@ __DRIconfig **radeonInitScreen2(__DRIscreen *psp)
 				     ARRAY_SIZE(back_buffer_modes),
 				     msaa_samples_array,
 				     ARRAY_SIZE(msaa_samples_array),
-				     GL_TRUE, GL_FALSE);
+				     GL_TRUE, GL_FALSE, GL_FALSE);
       configs = driConcatConfigs(configs, new_configs);
    }
 

@@ -52,6 +52,8 @@ struct fd_texture_stateobj {
 	struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
 	unsigned num_samplers;
 	unsigned valid_samplers;
+	/* number of samples per sampler, 2 bits per sampler: */
+	uint32_t samples;
 };
 
 struct fd_program_stateobj {
@@ -69,20 +71,22 @@ struct fd_program_stateobj {
 struct fd_constbuf_stateobj {
 	struct pipe_constant_buffer cb[PIPE_MAX_CONSTANT_BUFFERS];
 	uint32_t enabled_mask;
-	uint32_t dirty_mask;
 };
 
 struct fd_shaderbuf_stateobj {
 	struct pipe_shader_buffer sb[PIPE_MAX_SHADER_BUFFERS];
 	uint32_t enabled_mask;
-	uint32_t dirty_mask;
+};
+
+struct fd_shaderimg_stateobj {
+	struct pipe_image_view si[PIPE_MAX_SHADER_IMAGES];
+	uint32_t enabled_mask;
 };
 
 struct fd_vertexbuf_stateobj {
 	struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
 	unsigned count;
 	uint32_t enabled_mask;
-	uint32_t dirty_mask;
 };
 
 struct fd_vertex_stateobj {
@@ -102,6 +106,12 @@ struct fd_streamout_stateobj {
 	 * something more clever.
 	 */
 	unsigned offsets[PIPE_MAX_SO_BUFFERS];
+};
+
+#define MAX_GLOBAL_BUFFERS 16
+struct fd_global_bindings_stateobj {
+	struct pipe_resource *buf[MAX_GLOBAL_BUFFERS];
+	uint32_t enabled_mask;
 };
 
 /* group together the vertex and vertexbuf state.. for ease of passing
@@ -149,6 +159,7 @@ enum fd_dirty_shader_state {
 	FD_DIRTY_SHADER_CONST = BIT(1),
 	FD_DIRTY_SHADER_TEX   = BIT(2),
 	FD_DIRTY_SHADER_SSBO  = BIT(3),
+	FD_DIRTY_SHADER_IMAGE = BIT(4),
 };
 
 struct fd_context {
@@ -208,7 +219,9 @@ struct fd_context {
 		uint64_t prims_emitted;
 		uint64_t prims_generated;
 		uint64_t draw_calls;
-		uint64_t batch_total, batch_sysmem, batch_gmem, batch_restore;
+		uint64_t batch_total, batch_sysmem, batch_gmem, batch_nondraw, batch_restore;
+		uint64_t staging_uploads, shadow_uploads;
+		uint64_t vs_regs, fs_regs;
 	} stats;
 
 	/* Current batch.. the rule here is that you can deref ctx->batch
@@ -218,8 +231,6 @@ struct fd_context {
 	 * you care about is not necessarily the same as ctx->batch.
 	 */
 	struct fd_batch *batch;
-
-	struct pipe_fence_handle *last_fence;
 
 	/* Are we in process of shadowing a resource? Used to detect recursion
 	 * in transfer_map, and skip unneeded synchronization.
@@ -274,7 +285,9 @@ struct fd_context {
 	struct pipe_viewport_state viewport;
 	struct fd_constbuf_stateobj constbuf[PIPE_SHADER_TYPES];
 	struct fd_shaderbuf_stateobj shaderbuf[PIPE_SHADER_TYPES];
+	struct fd_shaderimg_stateobj shaderimg[PIPE_SHADER_TYPES];
 	struct fd_streamout_stateobj streamout;
+	struct fd_global_bindings_stateobj global_bindings;
 	struct pipe_clip_state ucp;
 
 	struct pipe_query *cond_query;
@@ -297,7 +310,7 @@ struct fd_context {
 
 	/* draw: */
 	bool (*draw_vbo)(struct fd_context *ctx, const struct pipe_draw_info *info,
-                         unsigned index_offset);
+			unsigned index_offset);
 	bool (*clear)(struct fd_context *ctx, unsigned buffers,
 			const union pipe_color_union *color, double depth, unsigned stencil);
 
@@ -321,6 +334,14 @@ struct fd_context {
 	void (*query_prepare_tile)(struct fd_batch *batch, uint32_t n,
 			struct fd_ringbuffer *ring);
 	void (*query_set_stage)(struct fd_batch *batch, enum fd_render_stage stage);
+
+	/* blitter: */
+	void (*blit)(struct fd_context *ctx, const struct pipe_blit_info *info);
+
+	/* simple gpu "memcpy": */
+	void (*mem_to_mem)(struct fd_ringbuffer *ring, struct pipe_resource *dst,
+			unsigned dst_off, struct pipe_resource *src, unsigned src_off,
+			unsigned sizedwords);
 
 	/*
 	 * Common pre-cooked VBO state (used for a3xx and later):

@@ -1,3 +1,4 @@
+from __future__ import print_function
 
 from mako.template import Template
 from sys import argv
@@ -42,6 +43,8 @@ string = """/*
 
 #include <stdint.h>
 
+#include "config.h"
+#include "errors.h"
 #include "format_pack.h"
 #include "format_utils.h"
 #include "macros.h"
@@ -353,7 +356,7 @@ _mesa_pack_ubyte_rgba_row(mesa_format format, GLuint n,
    case ${f.name}:
       for (i = 0; i < n; ++i) {
          pack_ubyte_${f.short_name()}(src[i], d);
-         d += ${f.block_size() / 8};
+         d += ${f.block_size() // 8};
       }
       break;
 %endfor
@@ -385,7 +388,7 @@ _mesa_pack_uint_rgba_row(mesa_format format, GLuint n,
    case ${f.name}:
       for (i = 0; i < n; ++i) {
          pack_uint_${f.short_name()}(src[i], d);
-         d += ${f.block_size() / 8};
+         d += ${f.block_size() // 8};
       }
       break;
 %endfor
@@ -415,7 +418,7 @@ _mesa_pack_float_rgba_row(mesa_format format, GLuint n,
    case ${f.name}:
       for (i = 0; i < n; ++i) {
          pack_float_${f.short_name()}(src[i], d);
-         d += ${f.block_size() / 8};
+         d += ${f.block_size() // 8};
       }
       break;
 %endfor
@@ -997,6 +1000,6 @@ _mesa_pack_colormask(mesa_format format, const GLubyte colorMask[4], void *dst)
 }
 """
 
-template = Template(string);
+template = Template(string, future_imports=['division']);
 
-print template.render(argv = argv[0:])
+print(template.render(argv = argv[0:]))

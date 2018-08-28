@@ -74,24 +74,29 @@ AC_SUBST([OPENCL_VERSION])
 # in the first entry.
 LIBDRM_REQUIRED=2.4.75
 LIBDRM_RADEON_REQUIRED=2.4.71
-LIBDRM_AMDGPU_REQUIRED=2.4.85
+LIBDRM_AMDGPU_REQUIRED=2.4.93
 LIBDRM_INTEL_REQUIRED=2.4.75
 LIBDRM_NVVIEUX_REQUIRED=2.4.66
 LIBDRM_NOUVEAU_REQUIRED=2.4.66
-LIBDRM_FREEDRENO_REQUIRED=2.4.74
-LIBDRM_ETNAVIV_REQUIRED=2.4.82
+LIBDRM_FREEDRENO_REQUIRED=2.4.93
+LIBDRM_ETNAVIV_REQUIRED=2.4.89
+LIBDRM_VC4_REQUIRED=2.4.89
 
 dnl Versions for external dependencies
 DRI2PROTO_REQUIRED=2.8
 GLPROTO_REQUIRED=1.4.14
 LIBOMXIL_BELLAGIO_REQUIRED=0.0
-LIBVA_REQUIRED=0.38.0
+LIBOMXIL_TIZONIA_REQUIRED=0.10.0
+LIBVA_REQUIRED=0.39.0
 VDPAU_REQUIRED=1.1
 WAYLAND_REQUIRED=1.11
+WAYLAND_EGL_BACKEND_REQUIRED=3
 WAYLAND_PROTOCOLS_REQUIRED=1.8
 XCB_REQUIRED=1.9.3
 XCBDRI2_REQUIRED=1.8
+XCBDRI3_MODIFIERS_REQUIRED=1.13
 XCBGLX_REQUIRED=1.8.1
+XCBPRESENT_MODIFIERS_REQUIRED=1.13
 XDAMAGE_REQUIRED=1.1
 XSHMFENCE_REQUIRED=1.1
 XVMC_REQUIRED=1.0.6
@@ -103,15 +108,21 @@ dnl LLVM versions
 LLVM_REQUIRED_GALLIUM=3.3.0
 LLVM_REQUIRED_OPENCL=3.9.0
 LLVM_REQUIRED_R600=3.9.0
-LLVM_REQUIRED_RADEONSI=3.9.0
-LLVM_REQUIRED_RADV=3.9.0
-LLVM_REQUIRED_SWR=3.9.0
+LLVM_REQUIRED_RADEONSI=6.0.0
+LLVM_REQUIRED_RADV=6.0.0
+LLVM_REQUIRED_SWR=6.0.0
 
 dnl Check for progs
 AC_PROG_CPP
 AC_PROG_CC
 AC_PROG_CXX
+dnl add this here, so the help for this environmnet variable is close to
+dnl other CC/CXX flags related help
+AC_ARG_VAR([CXX11_CXXFLAGS], [Compiler flag to enable C++11 support (only needed if not
+                              enabled by default and different  from -std=c++11)])
 AM_PROG_CC_C_O
+AC_PROG_GREP
+AC_PROG_NM
 AM_PROG_AS
 AX_CHECK_GNU_MAKE
 AC_CHECK_PROGS([PYTHON2], [python2.7 python2 python])
@@ -119,6 +130,7 @@ AC_PROG_SED
 AC_PROG_MKDIR_P
 
 AC_SYS_LARGEFILE
+
 
 LT_PREREQ([2.2])
 LT_INIT([disable-static])
@@ -245,6 +257,7 @@ AX_GCC_FUNC_ATTRIBUTE([visibility])
 AX_GCC_FUNC_ATTRIBUTE([warn_unused_result])
 AX_GCC_FUNC_ATTRIBUTE([weak])
 AX_GCC_FUNC_ATTRIBUTE([alias])
+AX_GCC_FUNC_ATTRIBUTE([noreturn])
 
 AM_CONDITIONAL([GEN_ASM_OFFSETS], test "x$GEN_ASM_OFFSETS" = xyes)
 
@@ -265,7 +278,8 @@ _SAVE_LDFLAGS="$LDFLAGS"
 _SAVE_CPPFLAGS="$CPPFLAGS"
 
 dnl Compiler macros
-DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
+DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -DMESA_BBOX_OPT"
+dnl DEFINES="-D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
 AC_SUBST([DEFINES])
 android=no
 case "$host_os" in
@@ -282,14 +296,45 @@ esac
 
 AM_CONDITIONAL(HAVE_ANDROID, test "x$android" = xyes)
 
+
+dnl Conditional parameters for enabling BBOX file compilation in Makefile
+dnl bbox=yes
+dnl MESA_BBOX_ENABLE=true
+dnl AM_CONDITIONAL([MESA_BBOX_ENABLE], [test x$bbox= xyes])
+
 dnl
 dnl Check compiler flags
 dnl
-AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall"])
+
+AC_ARG_WITH([swr-archs],
+    [AS_HELP_STRING([--with-swr-archs@<:@=DIRS...@:>@],
+        [comma delimited swr architectures list, e.g.
+        "avx,avx2,sse4.1,sse4.2" @<:@default="sse4.1,sse4.2"@:>@])],
+    [with_swr_archs="$withval"],
+    [with_swr_archs="sse4.1,sse4.2"])
+
+swr_archs=`IFS=', '; echo $with_swr_archs`
+if test "$swr_archs" = "avx"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -mavx"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -mavx"])
+elif test "$swr_archs" = "avx2"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -mavx -mavx2"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -mavx -mavx2"])
+elif test "$swr_archs" = "sse4.1"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1"])
+elif test "$swr_archs" = "sse4.2"; then
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CFLAGS="$CFLAGS -Wall -msse4.1 -msse4.2"])
+AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall -msse4.1 -msse4.2"])
+fi
+
 AX_CHECK_COMPILE_FLAG([-Werror=implicit-function-declaration], [CFLAGS="$CFLAGS -Werror=implicit-function-declaration"])
 AX_CHECK_COMPILE_FLAG([-Werror=missing-prototypes],            [CFLAGS="$CFLAGS -Werror=missing-prototypes"])
 AX_CHECK_COMPILE_FLAG([-Wmissing-prototypes],                  [CFLAGS="$CFLAGS -Wmissing-prototypes"])
+dnl Dylan Baker: gcc and clang always accepr -Wno-*, hence check for the original warning, then set the no-* flag
+AX_CHECK_COMPILE_FLAG([-Wmissing-field-initializers],          [CFLAGS="$CFLAGS -Wno-missing-field-initializers"])
 AX_CHECK_COMPILE_FLAG([-fno-math-errno],                       [CFLAGS="$CFLAGS -fno-math-errno"])
+
 AX_CHECK_COMPILE_FLAG([-fno-trapping-math],                    [CFLAGS="$CFLAGS -fno-trapping-math"])
 AX_CHECK_COMPILE_FLAG([-fvisibility=hidden],                   [VISIBILITY_CFLAGS="-fvisibility=hidden"])
 
@@ -297,10 +342,10 @@ dnl
 dnl Check C++ compiler flags
 dnl
 AC_LANG_PUSH([C++])
-AX_CHECK_COMPILE_FLAG([-Wall],                                 [CXXFLAGS="$CXXFLAGS -Wall"])
 AX_CHECK_COMPILE_FLAG([-fno-math-errno],                       [CXXFLAGS="$CXXFLAGS -fno-math-errno"])
 AX_CHECK_COMPILE_FLAG([-fno-trapping-math],                    [CXXFLAGS="$CXXFLAGS -fno-trapping-math"])
 AX_CHECK_COMPILE_FLAG([-fvisibility=hidden],                   [VISIBILITY_CXXFLAGS="-fvisibility=hidden"])
+AX_CHECK_COMPILE_FLAG([-Wmissing-field-initializers],          [CXXFLAGS="$CXXFLAGS -Wno-missing-field-initializers"])
 AC_LANG_POP([C++])
 
 # Flags to help ensure that certain portions of the code -- and only those
@@ -309,11 +354,11 @@ AC_LANG_POP([C++])
 # - non-Linux/Posix OpenGL portions needs to build on MSVC 2013 (which
 #   supports most of C99)
 # - the rest has no compiler compiler restrictions
-AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CFLAGS="-Werror=pointer-arith"])
-AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CFLAGS="-Werror=vla"])
+AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CFLAGS="$MSVC2013_COMPAT_CFLAGS -Werror=pointer-arith"])
+AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CFLAGS="$MSVC2013_COMPAT_CFLAGS -Werror=vla"])
 AC_LANG_PUSH([C++])
-AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CXXFLAGS="-Werror=pointer-arith"])
-AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CXXFLAGS="-Werror=vla"])
+AX_CHECK_COMPILE_FLAG([-Werror=pointer-arith],                 [MSVC2013_COMPAT_CXXFLAGS="$MSVC2013_COMPAT_CXXFLAGS -Werror=pointer-arith"])
+AX_CHECK_COMPILE_FLAG([-Werror=vla],                           [MSVC2013_COMPAT_CXXFLAGS="$MSVC2013_COMPAT_CXXFLAGS -Werror=vla"])
 AC_LANG_POP([C++])
 
 AC_SUBST([MSVC2013_COMPAT_CFLAGS])
@@ -327,6 +372,56 @@ if test "x$GCC" = xyes; then
     fi
 fi
 
+dnl
+dnl Check whether C++11 is supported, if the environment variable
+dnl CXX11_CXXFLAGS is set it takes precedence.
+dnl
+
+AC_LANG_PUSH([C++])
+
+check_cxx11_available() {
+    output_support=$1
+    AC_COMPILE_IFELSE(
+        [AC_LANG_PROGRAM([
+             #if !(__cplusplus >= 201103L)
+             #error
+             #endif
+             #include <tuple>
+        ])
+    ], [
+         AC_MSG_RESULT(yes)
+         cxx11_support=yes
+    ], AC_MSG_RESULT(no))
+    eval "$output_support=\$cxx11_support"
+}
+
+HAVE_CXX11=no
+save_CXXFLAGS="$CXXFLAGS"
+
+dnl If the user provides a flag to enable c++11, then we test only this
+if test "x$CXX11_CXXFLAGS" != "x"; then
+   CXXFLAGS="$CXXFLAGS $CXX11_CXXFLAGS"
+   AC_MSG_CHECKING(whether c++11 is enabled by via $CXX11_CXXFLAGS)
+   check_cxx11_available HAVE_CXX11
+else
+   dnl test whether c++11 is enabled by default
+   AC_MSG_CHECKING(whether c++11 is enabled by default)
+   check_cxx11_available HAVE_CXX11
+
+   dnl C++11 not enabled by default, test whether -std=c++11 does the job
+   if test "x$HAVE_CXX11" != "xyes"; then
+       CXX11_CXXFLAGS=-std=c++11
+       CXXFLAGS="$CXXFLAGS $CXX11_CXXFLAGS"
+       AC_MSG_CHECKING(whether c++11 is enabled by via $CXX11_CXXFLAGS)
+       check_cxx11_available HAVE_CXX11
+   fi
+fi
+
+CXXFLAGS="$save_CXXFLAGS"
+AM_CONDITIONAL(HAVE_STD_CXX11, test "x$HAVE_CXX11" = "xyes")
+AC_SUBST(CXX11_CXXFLAGS)
+AC_LANG_POP([C++])
+
 dnl even if the compiler appears to support it, using visibility attributes isn't
 dnl going to do anything useful currently on cygwin apart from emit lots of warnings
 case "$host_os" in
@@ -339,8 +434,10 @@ esac
 AC_SUBST([VISIBILITY_CFLAGS])
 AC_SUBST([VISIBILITY_CXXFLAGS])
 
-AX_CHECK_COMPILE_FLAG([-Wno-override-init],                    [WNO_OVERRIDE_INIT="-Wno-override-init"])         # gcc
-AX_CHECK_COMPILE_FLAG([-Wno-initializer-overrides],            [WNO_OVERRIDE_INIT="-Wno-initializer-overrides"]) # clang
+dnl For some reason, the test for -Wno-foo always succeeds with gcc, even if the
+dnl option is not supported. Hence, check for -Wfoo instead.
+AX_CHECK_COMPILE_FLAG([-Woverride-init],                    [WNO_OVERRIDE_INIT="$WNO_OVERRIDE_INIT -Wno-override-init"])         # gcc
+AX_CHECK_COMPILE_FLAG([-Winitializer-overrides],            [WNO_OVERRIDE_INIT="$WNO_OVERRIDE_INIT -Wno-initializer-overrides"]) # clang
 AC_SUBST([WNO_OVERRIDE_INIT])
 
 dnl
@@ -371,28 +468,41 @@ fi
 AM_CONDITIONAL([SSE41_SUPPORTED], [test x$SSE41_SUPPORTED = x1])
 AC_SUBST([SSE41_CFLAGS], $SSE41_CFLAGS)
 
-dnl Check for new-style atomic builtins
-AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+dnl Check for new-style atomic builtins. We first check without linking to
+dnl -latomic.
+AC_MSG_CHECKING(whether __atomic_load_n is supported)
+AC_LINK_IFELSE([AC_LANG_SOURCE([[
+#include <stdint.h>
 int main() {
-    int n;
-    return __atomic_load_n(&n, __ATOMIC_ACQUIRE);
-}]])], GCC_ATOMIC_BUILTINS_SUPPORTED=1)
-if test "x$GCC_ATOMIC_BUILTINS_SUPPORTED" = x1; then
-    DEFINES="$DEFINES -DUSE_GCC_ATOMIC_BUILTINS"
-    dnl On some platforms, new-style atomics need a helper library
-    AC_MSG_CHECKING(whether -latomic is needed)
-    AC_LINK_IFELSE([AC_LANG_SOURCE([[
-    #include <stdint.h>
-    uint64_t v;
-    int main() {
-        return (int)__atomic_load_n(&v, __ATOMIC_ACQUIRE);
-    }]])], GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC=no, GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC=yes)
-    AC_MSG_RESULT($GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC)
-    if test "x$GCC_ATOMIC_BUILTINS_NEED_LIBATOMIC" = xyes; then
-        LIBATOMIC_LIBS="-latomic"
-    fi
+    struct {
+        uint64_t *v;
+    } x;
+    return (int)__atomic_load_n(x.v, __ATOMIC_ACQUIRE) &
+           (int)__atomic_add_fetch(x.v, (uint64_t)1, __ATOMIC_ACQ_REL);
+}]])], GCC_ATOMIC_BUILTINS_SUPPORTED=yes, GCC_ATOMIC_BUILTINS_SUPPORTED=no)
+
+dnl If that didn't work, we try linking with -latomic, which is needed on some
+dnl platforms.
+if test "x$GCC_ATOMIC_BUILTINS_SUPPORTED" != xyes; then
+   save_LDFLAGS=$LDFLAGS
+   LDFLAGS="$LDFLAGS -latomic"
+   AC_LINK_IFELSE([AC_LANG_SOURCE([[
+   #include <stdint.h>
+   int main() {
+        struct {
+            uint64_t *v;
+        } x;
+        return (int)__atomic_load_n(x.v, __ATOMIC_ACQUIRE) &
+               (int)__atomic_add_fetch(x.v, (uint64_t)1, __ATOMIC_ACQ_REL);
+   }]])], GCC_ATOMIC_BUILTINS_SUPPORTED=yes LIBATOMIC_LIBS="-latomic",
+          GCC_ATOMIC_BUILTINS_SUPPORTED=no)
+   LDFLAGS=$save_LDFLAGS
 fi
-AM_CONDITIONAL([GCC_ATOMIC_BUILTINS_SUPPORTED], [test x$GCC_ATOMIC_BUILTINS_SUPPORTED = x1])
+AC_MSG_RESULT($GCC_ATOMIC_BUILTINS_SUPPORTED)
+
+if test "x$GCC_ATOMIC_BUILTINS_SUPPORTED" = xyes; then
+    DEFINES="$DEFINES -DUSE_GCC_ATOMIC_BUILTINS"
+fi
 AC_SUBST([LIBATOMIC_LIBS])
 
 dnl Check if host supports 64-bit atomics
@@ -628,6 +738,19 @@ LDFLAGS=$save_LDFLAGS
 AM_CONDITIONAL(HAVE_LD_DYNAMIC_LIST, test "$have_ld_dynamic_list" = "yes")
 
 dnl
+dnl OSX linker does not support build-id
+dnl
+case "$host_os" in
+darwin*)
+    LD_BUILD_ID=""
+    ;;
+*)
+    LD_BUILD_ID="-Wl,--build-id=sha1"
+    ;;
+esac
+AC_SUBST([LD_BUILD_ID])
+
+dnl
 dnl compatibility symlinks
 dnl
 case "$host_os" in
@@ -671,21 +794,6 @@ aix* )
 esac
 
 AC_SUBST([LIB_EXT])
-
-dnl
-dnl potentially-infringing-but-nobody-knows-for-sure stuff
-dnl
-AC_ARG_ENABLE([texture-float],
-    [AS_HELP_STRING([--enable-texture-float],
-        [enable floating-point textures and renderbuffers @<:@default=disabled@:>@])],
-    [enable_texture_float="$enableval"],
-    [enable_texture_float=no]
-)
-if test "x$enable_texture_float" = xyes; then
-    AC_MSG_WARN([Floating-point textures enabled.])
-    AC_MSG_WARN([Please consult docs/patents.txt with your lawyer before building Mesa.])
-    DEFINES="$DEFINES -DTEXTURE_FLOAT_ENABLED"
-fi
 
 dnl
 dnl Arch/platform-specific settings
@@ -791,8 +899,12 @@ fi
 AC_HEADER_MAJOR
 AC_CHECK_HEADER([xlocale.h], [DEFINES="$DEFINES -DHAVE_XLOCALE_H"])
 AC_CHECK_HEADER([sys/sysctl.h], [DEFINES="$DEFINES -DHAVE_SYS_SYSCTL_H"])
+AC_CHECK_HEADERS([endian.h])
+AC_CHECK_HEADER([dlfcn.h], [DEFINES="$DEFINES -DHAVE_DLFCN_H"])
 AC_CHECK_FUNC([strtof], [DEFINES="$DEFINES -DHAVE_STRTOF"])
 AC_CHECK_FUNC([mkostemp], [DEFINES="$DEFINES -DHAVE_MKOSTEMP"])
+AC_CHECK_FUNC([timespec_get], [DEFINES="$DEFINES -DHAVE_TIMESPEC_GET"])
+AC_CHECK_FUNC([memfd_create], [DEFINES="$DEFINES -DHAVE_MEMFD_CREATE"])
 
 AC_MSG_CHECKING([whether strtod has locale support])
 AC_LINK_IFELSE([AC_LANG_SOURCE([[
@@ -846,6 +958,7 @@ AC_CHECK_FUNC([posix_memalign], [DEFINES="$DEFINES -DHAVE_POSIX_MEMALIGN"])
 
 dnl Check for zlib
 PKG_CHECK_MODULES([ZLIB], [zlib >= $ZLIB_REQUIRED])
+DEFINES="$DEFINES -DHAVE_ZLIB"
 
 dnl Check for pthreads
 AX_PTHREAD
@@ -865,10 +978,10 @@ dnl In practise that should be sufficient for all platforms, since any
 dnl platforms build with GCC and Clang support the flag.
 PTHREAD_LIBS="$PTHREAD_LIBS -pthread"
 
-dnl pthread-stubs is mandatory on BSD platforms, due to the nature of the
+dnl pthread-stubs is mandatory on some BSD platforms, due to the nature of the
 dnl project. Even then there's a notable issue as described in the project README
 case "$host_os" in
-linux* | cygwin* | darwin* | solaris* | *-gnu* | gnu*)
+linux* | cygwin* | darwin* | solaris* | *-gnu* | gnu* | openbsd*)
     pthread_stubs_possible="no"
     ;;
 * )
@@ -879,6 +992,9 @@ esac
 if test "x$pthread_stubs_possible" = xyes; then
     PKG_CHECK_MODULES(PTHREADSTUBS, pthread-stubs >= 0.4)
 fi
+
+dnl Check for futex for fast inline simple_mtx_t.
+AC_CHECK_HEADER([linux/futex.h], [DEFINES="$DEFINES -DHAVE_LINUX_FUTEX_H"])
 
 dnl SELinux awareness.
 AC_ARG_ENABLE([selinux],
@@ -1206,10 +1322,10 @@ AC_ARG_ENABLE([xa],
     [enable_xa=no])
 AC_ARG_ENABLE([gbm],
    [AS_HELP_STRING([--enable-gbm],
-         [enable gbm library @<:@default=yes except cygwin@:>@])],
+         [enable gbm library @<:@default=yes except cygwin and macOS@:>@])],
    [enable_gbm="$enableval"],
    [case "$host_os" in
-       cygwin*)
+       cygwin* | darwin*)
           enable_gbm=no
           ;;
        *)
@@ -1234,14 +1350,19 @@ AC_ARG_ENABLE([vdpau],
    [enable_vdpau=auto])
 AC_ARG_ENABLE([omx],
    [AS_HELP_STRING([--enable-omx],
-         [DEPRECATED: Use --enable-omx-bellagio instead @<:@default=auto@:>@])],
-   [AC_MSG_ERROR([--enable-omx is deprecated. Use --enable-omx-bellagio instead.])],
+         [DEPRECATED: Use --enable-omx-bellagio or --enable-omx-tizonia instead @<:@default=auto@:>@])],
+   [AC_MSG_ERROR([--enable-omx is deprecated. Use --enable-omx-bellagio or --enable-omx-tizonia instead.])],
    [])
 AC_ARG_ENABLE([omx-bellagio],
    [AS_HELP_STRING([--enable-omx-bellagio],
          [enable OpenMAX Bellagio library @<:@default=disabled@:>@])],
    [enable_omx_bellagio="$enableval"],
    [enable_omx_bellagio=no])
+AC_ARG_ENABLE([omx-tizonia],
+   [AS_HELP_STRING([--enable-omx-tizonia],
+         [enable OpenMAX Tizonia library @<:@default=disabled@:>@])],
+   [enable_omx_tizonia="$enableval"],
+   [enable_omx_tizonia=no])
 AC_ARG_ENABLE([va],
    [AS_HELP_STRING([--enable-va],
          [enable va library @<:@default=auto@:>@])],
@@ -1255,9 +1376,9 @@ AC_ARG_ENABLE([opencl],
 AC_ARG_ENABLE([opencl_icd],
    [AS_HELP_STRING([--enable-opencl-icd],
           [Build an OpenCL ICD library to be loaded by an ICD implementation
-           @<:@default=disabled@:>@])],
+           @<:@default=enabled@:>@])],
     [enable_opencl_icd="$enableval"],
-    [enable_opencl_icd=no])
+    [enable_opencl_icd=yes])
 
 AC_ARG_ENABLE([gallium-tests],
     [AS_HELP_STRING([--enable-gallium-tests],
@@ -1273,7 +1394,7 @@ GALLIUM_DRIVERS_DEFAULT="r300,r600,svga,swrast"
 AC_ARG_WITH([gallium-drivers],
     [AS_HELP_STRING([--with-gallium-drivers@<:@=DIRS...@:>@],
         [comma delimited Gallium drivers list, e.g.
-        "i915,nouveau,r300,r600,radeonsi,freedreno,pl111,svga,swrast,swr,vc4,vc5,virgl,etnaviv,imx"
+        "i915,nouveau,r300,r600,radeonsi,freedreno,pl111,svga,swrast,swr,tegra,v3d,vc4,virgl,etnaviv,imx"
         @<:@default=r300,r600,svga,swrast@:>@])],
     [with_gallium_drivers="$withval"],
     [with_gallium_drivers="$GALLIUM_DRIVERS_DEFAULT"])
@@ -1293,9 +1414,15 @@ if test "x$enable_opengl" = xno -a \
         "x$enable_xvmc" = xno -a \
         "x$enable_vdpau" = xno -a \
         "x$enable_omx_bellagio" = xno -a \
+        "x$enable_omx_tizonia" = xno -a \
         "x$enable_va" = xno -a \
         "x$enable_opencl" = xno; then
     AC_MSG_ERROR([at least one API should be enabled])
+fi
+
+if test "x$enable_omx_bellagio" = xyes -a \
+        "x$enable_omx_tizonia" = xyes; then
+   AC_MSG_ERROR([Can't enable both bellagio and tizonia at same time])
 fi
 
 # Building OpenGL ES1 and/or ES2 without OpenGL is not supported on mesa 9.0.x
@@ -1316,6 +1443,7 @@ AM_CONDITIONAL(NEED_OPENGL_COMMON, test "x$enable_opengl" = xyes -o \
                                         "x$enable_gles1" = xyes -o \
                                         "x$enable_gles2" = xyes)
 AM_CONDITIONAL(NEED_KHRPLATFORM, test "x$enable_egl" = xyes -o \
+                                      "x$enable_opengl" = xyes -o \
                                       "x$enable_gles1" = xyes -o \
                                       "x$enable_gles2" = xyes)
 
@@ -1383,17 +1511,9 @@ AC_ARG_ENABLE([libglvnd],
 AM_CONDITIONAL(USE_LIBGLVND, test "x$enable_libglvnd" = xyes)
 
 if test "x$enable_libglvnd" = xyes ; then
-    dnl XXX: update once we can handle more than libGL/glx.
-    dnl Namely: we should error out if neither of the glvnd enabled libraries
-    dnl are built
     case "x$enable_glx" in
-    xno)
-        AC_MSG_ERROR([cannot build libglvnd without GLX])
-        ;;
     xxlib | xgallium-xlib )
         AC_MSG_ERROR([cannot build libgvnd when Xlib-GLX or Gallium-Xlib-GLX is enabled])
-        ;;
-    xdri)
         ;;
     esac
 
@@ -1403,20 +1523,24 @@ if test "x$enable_libglvnd" = xyes ; then
 
     DEFINES="${DEFINES} -DUSE_LIBGLVND=1"
     DEFAULT_GL_LIB_NAME=GLX_mesa
+
+    if test "x$enable_glx" = xno -a "x$enable_egl" = xno; then
+        AC_MSG_ERROR([cannot build libglvnd without GLX or EGL])
+    fi
 fi
 
 AC_ARG_WITH([gl-lib-name],
   [AS_HELP_STRING([--with-gl-lib-name@<:@=NAME@:>@],
     [specify GL library name @<:@default=GL@:>@])],
-  [GL_LIB=$withval],
-  [GL_LIB="$DEFAULT_GL_LIB_NAME"])
+  [AC_MSG_ERROR([--with-gl-lib-name is no longer supported. Rename the library manually if needed.])],
+  [])
 AC_ARG_WITH([osmesa-lib-name],
   [AS_HELP_STRING([--with-osmesa-lib-name@<:@=NAME@:>@],
     [specify OSMesa library name @<:@default=OSMesa@:>@])],
-  [OSMESA_LIB=$withval],
-  [OSMESA_LIB=OSMesa])
-AS_IF([test "x$GL_LIB" = xyes], [GL_LIB="$DEFAULT_GL_LIB_NAME"])
-AS_IF([test "x$OSMESA_LIB" = xyes], [OSMESA_LIB=OSMesa])
+  [AC_MSG_ERROR([--with-osmesa-lib-name is no longer supported. Rename the library manually if needed.])],
+  [])
+GL_LIB="$DEFAULT_GL_LIB_NAME"
+OSMESA_LIB=OSMesa
 
 dnl
 dnl Mangled Mesa support
@@ -1428,12 +1552,24 @@ AC_ARG_ENABLE([mangling],
   [enable_mangling=no]
 )
 if test "x${enable_mangling}" = "xyes" ; then
+  if test "x$enable_libglvnd" = xyes; then
+    AC_MSG_ERROR([Conflicting options --enable-mangling and --enable-libglvnd.])
+  fi
   DEFINES="${DEFINES} -DUSE_MGL_NAMESPACE"
   GL_LIB="Mangled${GL_LIB}"
   OSMESA_LIB="Mangled${OSMESA_LIB}"
 fi
 AC_SUBST([GL_LIB])
 AC_SUBST([OSMESA_LIB])
+
+dnl HACK when building glx + glvnd we ship gl.pc, despite that glvnd should do it
+dnl Thus we need to use GL as a DSO name.
+if test "x$enable_libglvnd" = xyes -a "x$enable_glx" != xno; then
+  GL_PKGCONF_LIB="GL"
+else
+  GL_PKGCONF_LIB="$GL_LIB"
+fi
+AC_SUBST([GL_PKGCONF_LIB])
 
 # Check for libdrm
 PKG_CHECK_MODULES([LIBDRM], [libdrm >= $LIBDRM_REQUIRED],
@@ -1474,6 +1610,7 @@ AM_CONDITIONAL(HAVE_APPLEDRI, test "x$enable_dri" = xyes -a "x$dri_platform" = x
 AM_CONDITIONAL(HAVE_LMSENSORS, test "x$enable_lmsensors" = xyes )
 AM_CONDITIONAL(HAVE_GALLIUM_EXTRA_HUD, test "x$enable_gallium_extra_hud" = xyes )
 AM_CONDITIONAL(HAVE_WINDOWSDRI, test "x$enable_dri" = xyes -a "x$dri_platform" = xwindows )
+AM_CONDITIONAL(HAVE_XLEASE, test "x$have_xlease" = xyes )
 
 AC_ARG_ENABLE([shared-glapi],
     [AS_HELP_STRING([--enable-shared-glapi],
@@ -1538,7 +1675,7 @@ fi
 AC_ARG_ENABLE([driglx-direct],
     [AS_HELP_STRING([--disable-driglx-direct],
         [disable direct rendering in GLX and EGL for DRI \
-            @<:@default=auto@:>@])],
+            @<:@default=enabled@:>@])],
     [driglx_direct="$enableval"],
     [driglx_direct="yes"])
 
@@ -1561,6 +1698,8 @@ xxlib | xgallium-xlib)
     ;;
 xdri)
     # DRI-based GLX
+
+    require_dri_shared_libs_and_glapi "GLX"
 
     # find the DRI deps for libGL
     dri_modules="x11 xext xdamage >= $XDAMAGE_REQUIRED xfixes x11-xcb xcb xcb-glx >= $XCBGLX_REQUIRED"
@@ -1697,19 +1836,6 @@ if test "x$with_platforms" = xauto; then
     with_platforms=$with_egl_platforms
 fi
 
-PKG_CHECK_MODULES([WAYLAND_SCANNER], [wayland-scanner],
-        WAYLAND_SCANNER=`$PKG_CONFIG --variable=wayland_scanner wayland-scanner`,
-        WAYLAND_SCANNER='')
-if test "x$WAYLAND_SCANNER" = x; then
-    AC_PATH_PROG([WAYLAND_SCANNER], [wayland-scanner], [:])
-fi
-
-PKG_CHECK_EXISTS([wayland-protocols >= $WAYLAND_PROTOCOLS_REQUIRED], [have_wayland_protocols=yes], [have_wayland_protocols=no])
-if test "x$have_wayland_protocols" = xyes; then
-    ac_wayland_protocols_pkgdatadir=`$PKG_CONFIG --variable=pkgdatadir wayland-protocols`
-fi
-AC_SUBST(WAYLAND_PROTOCOLS_DATADIR, $ac_wayland_protocols_pkgdatadir)
-
 # Do per platform setups and checks
 platforms=`IFS=', '; echo $with_platforms`
 for plat in $platforms; do
@@ -1718,12 +1844,25 @@ for plat in $platforms; do
 
         PKG_CHECK_MODULES([WAYLAND_CLIENT], [wayland-client >= $WAYLAND_REQUIRED])
         PKG_CHECK_MODULES([WAYLAND_SERVER], [wayland-server >= $WAYLAND_REQUIRED])
+        PKG_CHECK_MODULES([WAYLAND_PROTOCOLS], [wayland-protocols >= $WAYLAND_PROTOCOLS_REQUIRED])
+        if test "x$enable_egl" = xyes; then
+          PKG_CHECK_MODULES([WAYLAND_EGL], [wayland-egl-backend >= $WAYLAND_EGL_BACKEND_REQUIRED])
+        fi
+        WAYLAND_PROTOCOLS_DATADIR=`$PKG_CONFIG --variable=pkgdatadir wayland-protocols`
+
+        PKG_CHECK_MODULES([WAYLAND_SCANNER], [wayland-scanner],
+                          WAYLAND_SCANNER=`$PKG_CONFIG --variable=wayland_scanner wayland-scanner`,
+                          WAYLAND_SCANNER='')
+        PKG_CHECK_EXISTS([wayland-scanner >= 1.15],
+                          AC_SUBST(SCANNER_ARG, 'private-code'),
+                          AC_SUBST(SCANNER_ARG, 'code'))
+
+        if test "x$WAYLAND_SCANNER" = x; then
+            AC_PATH_PROG([WAYLAND_SCANNER], [wayland-scanner], [:])
+        fi
 
         if test "x$WAYLAND_SCANNER" = "x:"; then
                 AC_MSG_ERROR([wayland-scanner is needed to compile the wayland platform])
-        fi
-        if test "x$have_wayland_protocols" = xno; then
-                AC_MSG_ERROR([wayland-protocols >= $WAYLAND_PROTOCOLS_REQUIRED is needed to compile the wayland platform])
         fi
         DEFINES="$DEFINES -DHAVE_WAYLAND_PLATFORM -DWL_HIDE_DEPRECATED"
         ;;
@@ -1745,6 +1884,9 @@ for plat in $platforms; do
 
     android)
         PKG_CHECK_MODULES([ANDROID], [cutils hardware sync])
+        if test -n "$with_gallium_drivers"; then
+            PKG_CHECK_MODULES([BACKTRACE], [backtrace])
+        fi
         DEFINES="$DEFINES -DHAVE_ANDROID_PLATFORM"
         ;;
 
@@ -1759,6 +1901,7 @@ for plat in $platforms; do
         ;;
     esac
 done
+AC_SUBST([WAYLAND_PROTOCOLS_DATADIR])
 
 if test "x$enable_glx" != xno; then
     if ! echo "$platforms" | grep -q 'x11'; then
@@ -1771,6 +1914,26 @@ if test x"$enable_dri3" = xyes; then
 
     dri3_modules="x11-xcb xcb >= $XCB_REQUIRED xcb-dri3 xcb-xfixes xcb-present xcb-sync xshmfence >= $XSHMFENCE_REQUIRED"
     PKG_CHECK_MODULES([XCB_DRI3], [$dri3_modules])
+    dri3_modifier_modules="xcb-dri3 >= $XCBDRI3_MODIFIERS_REQUIRED xcb-present >= $XCBPRESENT_MODIFIERS_REQUIRED"
+    PKG_CHECK_MODULES([XCB_DRI3_MODIFIERS], [$dri3_modifier_modules], [have_dri3_modifiers=yes], [have_dri3_modifiers=no])
+
+    if test "x$have_dri3_modifiers" == xyes; then
+        DEFINES="$DEFINES -DHAVE_DRI3_MODIFIERS"
+    fi
+fi
+
+
+if echo "$platforms" | grep -q 'x11' && echo "$platforms" | grep -q 'drm'; then
+    have_xlease=yes
+else
+    have_xlease=no
+fi
+
+if test x"$have_xlease" = xyes; then
+    randr_modules="x11-xcb xcb-randr"
+    PKG_CHECK_MODULES([XCB_RANDR], [$randr_modules])
+    xlib_randr_modules="xrandr"
+    PKG_CHECK_MODULES([XLIB_RANDR], [$xlib_randr_modules])
 fi
 
 AM_CONDITIONAL(HAVE_PLATFORM_X11, echo "$platforms" | grep -q 'x11')
@@ -1778,6 +1941,25 @@ AM_CONDITIONAL(HAVE_PLATFORM_WAYLAND, echo "$platforms" | grep -q 'wayland')
 AM_CONDITIONAL(HAVE_PLATFORM_DRM, echo "$platforms" | grep -q 'drm')
 AM_CONDITIONAL(HAVE_PLATFORM_SURFACELESS, echo "$platforms" | grep -q 'surfaceless')
 AM_CONDITIONAL(HAVE_PLATFORM_ANDROID, echo "$platforms" | grep -q 'android')
+
+AC_ARG_ENABLE(xlib-lease,
+    [AS_HELP_STRING([--enable-xlib-lease]
+                    [enable VK_acquire_xlib_display using X leases])],
+    [enable_xlib_lease=$enableval], [enable_xlib_lease=auto])
+case "x$enable_xlib_lease" in
+xyes)
+    ;;
+xno)
+    ;;
+*)
+    if echo "$platforms" | grep -q 'x11' && echo "$platforms" | grep -q 'drm'; then
+        enable_xlib_lease=yes
+    else
+        enable_xlib_lease=no
+    fi
+esac
+
+AM_CONDITIONAL(HAVE_XLIB_LEASE, test "x$enable_xlib_lease" = xyes)
 
 dnl
 dnl More DRI setup
@@ -1997,6 +2179,9 @@ if test -n "$with_vulkan_drivers"; then
             PKG_CHECK_MODULES([AMDGPU], [libdrm >= $LIBDRM_AMDGPU_REQUIRED libdrm_amdgpu >= $LIBDRM_AMDGPU_REQUIRED])
             radeon_llvm_check $LLVM_REQUIRED_RADV "radv"
             require_x11_dri3 "radv"
+            if test "x$acv_mako_found" = xno; then
+                AC_MSG_ERROR([Python mako module v$PYTHON_MAKO_REQUIRED or higher not found])
+            fi
             HAVE_RADEON_VULKAN=yes
             ;;
         *)
@@ -2114,13 +2299,13 @@ else
     have_vdpau_platform=no
 fi
 
-if echo $platforms | grep -q "x11\|drm"; then
+if echo $platforms | egrep -q "x11|drm"; then
     have_omx_platform=yes
 else
     have_omx_platform=no
 fi
 
-if echo $platforms | grep -q "x11\|drm\|wayland"; then
+if echo $platforms | egrep -q "x11|drm|wayland"; then
     have_va_platform=yes
 else
     have_va_platform=no
@@ -2142,6 +2327,10 @@ if test -n "$with_gallium_drivers" -a "x$with_gallium_drivers" != xswrast; then
         PKG_CHECK_EXISTS([libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED], [enable_omx_bellagio=yes], [enable_omx_bellagio=no])
     fi
 
+    if test "x$enable_omx_tizonia" = xauto -a "x$have_omx_platform" = xyes; then
+       PKG_CHECK_EXISTS([libtizonia >= $LIBOMXIL_TIZONIA_REQUIRED], [enable_omx_tizonia=yes], [enable_omx_tizonia=no])
+    fi
+
     if test "x$enable_va" = xauto -a "x$have_va_platform" = xyes; then
         PKG_CHECK_EXISTS([libva >= $LIBVA_REQUIRED], [enable_va=yes], [enable_va=no])
     fi
@@ -2151,6 +2340,7 @@ if test "x$enable_dri" = xyes -o \
         "x$enable_xvmc" = xyes -o \
         "x$enable_vdpau" = xyes -o \
         "x$enable_omx_bellagio" = xyes -o \
+        "x$enable_omx_tizonia" = xyes -o \
         "x$enable_va" = xyes; then
     need_gallium_vl=yes
 fi
@@ -2159,8 +2349,11 @@ AM_CONDITIONAL(NEED_GALLIUM_VL, test "x$need_gallium_vl" = xyes)
 if test "x$enable_xvmc" = xyes -o \
         "x$enable_vdpau" = xyes -o \
         "x$enable_omx_bellagio" = xyes -o \
+        "x$enable_omx_tizonia" = xyes -o \
         "x$enable_va" = xyes; then
-    PKG_CHECK_MODULES([VL], [x11-xcb xcb xcb-dri2 >= $XCBDRI2_REQUIRED])
+    if echo $platforms | grep -q "x11"; then
+        PKG_CHECK_MODULES([VL], [x11-xcb xcb xcb-dri2 >= $XCBDRI2_REQUIRED])
+    fi
     need_gallium_vl_winsys=yes
 fi
 AM_CONDITIONAL(NEED_GALLIUM_VL_WINSYS, test "x$need_gallium_vl_winsys" = xyes)
@@ -2190,8 +2383,26 @@ if test "x$enable_omx_bellagio" = xyes; then
     fi
     PKG_CHECK_MODULES([OMX_BELLAGIO], [libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED])
     gallium_st="$gallium_st omx_bellagio"
+    AC_DEFINE([ENABLE_ST_OMX_BELLAGIO], 1, [Use Bellagio for OMX IL])
+else
+    AC_DEFINE([ENABLE_ST_OMX_BELLAGIO], 0)
 fi
 AM_CONDITIONAL(HAVE_ST_OMX_BELLAGIO, test "x$enable_omx_bellagio" = xyes)
+
+if test "x$enable_omx_tizonia" = xyes; then
+    if test "x$have_omx_platform" != xyes; then
+        AC_MSG_ERROR([OMX requires at least one of the x11 or drm platforms])
+    fi
+    PKG_CHECK_MODULES([OMX_TIZONIA],
+                      [libtizonia >= $LIBOMXIL_TIZONIA_REQUIRED
+                       tizilheaders >= $LIBOMXIL_TIZONIA_REQUIRED
+                       libtizplatform >= $LIBOMXIL_TIZONIA_REQUIRED])
+    gallium_st="$gallium_st omx_tizonia"
+    AC_DEFINE([ENABLE_ST_OMX_TIZONIA], 1, [Use Tizoina for OMX IL])
+else
+    AC_DEFINE([ENABLE_ST_OMX_TIZONIA], 0)
+fi
+AM_CONDITIONAL(HAVE_ST_OMX_TIZONIA, test "x$enable_omx_tizonia" = xyes)
 
 if test "x$enable_va" = xyes; then
     if test "x$have_va_platform" != xyes; then
@@ -2241,8 +2452,8 @@ if test "x$enable_opencl" = xyes; then
         AC_MSG_ERROR([cannot enable OpenCL without Gallium])
     fi
 
-    if test $GCC_VERSION_MAJOR -lt 4 -o $GCC_VERSION_MAJOR -eq 4 -a $GCC_VERSION_MINOR -lt 7; then
-        AC_MSG_ERROR([gcc >= 4.7 is required to build clover])
+    if test "x$HAVE_CXX11" != "xyes"; then
+       AC_MSG_ERROR([clover requires c++11 support])
     fi
 
     if test "x$have_libclc" = xno; then
@@ -2365,6 +2576,15 @@ AC_ARG_WITH([omx-bellagio-libdir],
     [OMX_BELLAGIO_LIB_INSTALL_DIR=`$PKG_CONFIG --exists libomxil-bellagio && \
                                    $PKG_CONFIG --define-variable=libdir=\$libdir --variable=pluginsdir libomxil-bellagio`])
 AC_SUBST([OMX_BELLAGIO_LIB_INSTALL_DIR])
+
+dnl Directory for OMX_TIZONIA libs
+
+AC_ARG_WITH([omx-tizonia-libdir],
+    [AS_HELP_STRING([--with-omx-tizonia-libdir=DIR],
+        [directory for the OMX_TIZONIA libraries])],
+    [OMX_TIZONIA_LIB_INSTALL_DIR="$withval"],
+    [OMX_TIZONIA_LIB_INSTALL_DIR=`$PKG_CONFIG --define-variable=libdir=\$libdir --variable=pluginsdir libtizcore`])
+AC_SUBST([OMX_TIZONIA_LIB_INSTALL_DIR])
 
 dnl Directory for VA libs
 
@@ -2520,6 +2740,10 @@ if test -n "$with_gallium_drivers"; then
        ximx)
             HAVE_GALLIUM_IMX=yes
             ;;
+        xtegra)
+            HAVE_GALLIUM_TEGRA=yes
+            require_libdrm "tegra"
+            ;;
         xswrast)
             HAVE_GALLIUM_SOFTPIPE=yes
             if test "x$enable_llvm" = xyes; then
@@ -2529,10 +2753,9 @@ if test -n "$with_gallium_drivers"; then
         xswr)
             llvm_require_version $LLVM_REQUIRED_SWR "swr"
 
-            swr_require_cxx_feature_flags "C++11" "__cplusplus >= 201103L" \
-                ",-std=c++11" \
-                SWR_CXX11_CXXFLAGS
-            AC_SUBST([SWR_CXX11_CXXFLAGS])
+            if test "x$HAVE_CXX11" != "xyes"; then
+                AC_MSG_ERROR([swr requires c++11 support])
+            fi
 
             swr_require_cxx_feature_flags "AVX" "defined(__AVX__)" \
                 ",-target-cpu=sandybridge,-mavx,-march=core-avx,-tp=sandybridge" \
@@ -2579,24 +2802,29 @@ if test -n "$with_gallium_drivers"; then
                AC_MSG_ERROR([swr enabled but no swr architectures selected])
             fi
 
+            # test if more than one swr arch configured
+            if test `echo $swr_archs | wc -w` -eq 1; then
+                HAVE_SWR_BUILTIN=yes
+            fi
+
             HAVE_GALLIUM_SWR=yes
             ;;
         xvc4)
             HAVE_GALLIUM_VC4=yes
-            require_libdrm "vc4"
+            PKG_CHECK_MODULES([VC4], [libdrm >= $LIBDRM_VC4_REQUIRED])
 
             PKG_CHECK_MODULES([SIMPENROSE], [simpenrose],
                               [USE_VC4_SIMULATOR=yes;
                                DEFINES="$DEFINES -DUSE_VC4_SIMULATOR"],
                               [USE_VC4_SIMULATOR=no])
             ;;
-        xvc5)
-            HAVE_GALLIUM_VC5=yes
+        xv3d)
+            HAVE_GALLIUM_V3D=yes
 
-            PKG_CHECK_MODULES([VC5_SIMULATOR], [v3dv3],
-                              [USE_VC5_SIMULATOR=yes;
-                               DEFINES="$DEFINES -DUSE_VC5_SIMULATOR"],
-                              [AC_MSG_ERROR([vc5 requires the simulator])])
+            PKG_CHECK_MODULES([V3D_SIMULATOR], [v3dv3],
+                              [USE_V3D_SIMULATOR=yes;
+                               DEFINES="$DEFINES -DUSE_V3D_SIMULATOR"],
+                              [USE_V3D_SIMULATOR=no])
             ;;
         xpl111)
             HAVE_GALLIUM_PL111=yes
@@ -2616,8 +2844,8 @@ if test -n "$with_gallium_drivers"; then
 fi
 
 # XXX: Keep in sync with LLVM_REQUIRED_SWR
-AM_CONDITIONAL(SWR_INVALID_LLVM_VERSION, test "x$LLVM_VERSION" != x3.9.0 -a \
-                                              "x$LLVM_VERSION" != x3.9.1)
+AM_CONDITIONAL(SWR_INVALID_LLVM_VERSION, test "x$LLVM_VERSION" != x6.0.0 -a \
+                                              "x$LLVM_VERSION" != x6.0.1)
 
 if test "x$enable_llvm" = "xyes" -a "$with_gallium_drivers"; then
     llvm_require_version $LLVM_REQUIRED_GALLIUM "gallium"
@@ -2628,6 +2856,7 @@ AM_CONDITIONAL(HAVE_SWR_AVX, test "x$HAVE_SWR_AVX" = xyes)
 AM_CONDITIONAL(HAVE_SWR_AVX2, test "x$HAVE_SWR_AVX2" = xyes)
 AM_CONDITIONAL(HAVE_SWR_KNL, test "x$HAVE_SWR_KNL" = xyes)
 AM_CONDITIONAL(HAVE_SWR_SKX, test "x$HAVE_SWR_SKX" = xyes)
+AM_CONDITIONAL(HAVE_SWR_BUILTIN, test "x$HAVE_SWR_BUILTIN" = xyes)
 
 dnl We need to validate some needed dependencies for renderonly drivers.
 
@@ -2639,6 +2868,9 @@ if test "x$HAVE_GALLIUM_VC4" != xyes -a "x$HAVE_GALLIUM_PL111" = xyes  ; then
     AC_MSG_ERROR([Building with pl111 requires vc4])
 fi
 
+if test "x$HAVE_GALLIUM_NOUVEAU" != xyes -a "x$HAVE_GALLIUM_TEGRA" = xyes; then
+    AC_MSG_ERROR([Building with tegra requires nouveau])
+fi
 
 detect_old_buggy_llvm() {
     dnl llvm-config may not give the right answer when llvm is a built as a
@@ -2713,6 +2945,18 @@ if test "x$enable_llvm" = xyes; then
             fi
         fi
     fi
+
+    dnl The gallium-xlib GLX and gallium OSMesa targets directly embed the
+    dnl swr/llvmpipe driver into the final binary.  Adding LLVM_LIBS results in 
+    dnl the LLVM library propagated in the Libs.private of the respective .pc
+    dnl file which ensures complete dependency information when statically
+    dnl linking.
+    if test "x$enable_glx" == xgallium-xlib; then
+        GL_PC_LIB_PRIV="$GL_PC_LIB_PRIV $LLVM_LIBS"
+    fi
+    if test "x$enable_gallium_osmesa" = xyes; then
+        OSMESA_PC_LIB_PRIV="$OSMESA_PC_LIB_PRIV $LLVM_LIBS"
+    fi
 fi
 
 AM_CONDITIONAL(HAVE_GALLIUM_SVGA, test "x$HAVE_GALLIUM_SVGA" = xyes)
@@ -2721,19 +2965,19 @@ AM_CONDITIONAL(HAVE_GALLIUM_PL111, test "x$HAVE_GALLIUM_PL111" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_R300, test "x$HAVE_GALLIUM_R300" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_R600, test "x$HAVE_GALLIUM_R600" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_RADEONSI, test "x$HAVE_GALLIUM_RADEONSI" = xyes)
-AM_CONDITIONAL(HAVE_GALLIUM_RADEON_COMMON, test "x$HAVE_GALLIUM_RADEONSI" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_NOUVEAU, test "x$HAVE_GALLIUM_NOUVEAU" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_FREEDRENO, test "x$HAVE_GALLIUM_FREEDRENO" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_ETNAVIV, test "x$HAVE_GALLIUM_ETNAVIV" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_IMX, test "x$HAVE_GALLIUM_IMX" = xyes)
+AM_CONDITIONAL(HAVE_GALLIUM_TEGRA, test "x$HAVE_GALLIUM_TEGRA" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_SOFTPIPE, test "x$HAVE_GALLIUM_SOFTPIPE" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_LLVMPIPE, test "x$HAVE_GALLIUM_LLVMPIPE" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_SWR, test "x$HAVE_GALLIUM_SWR" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_SWRAST, test "x$HAVE_GALLIUM_SOFTPIPE" = xyes -o \
                                          "x$HAVE_GALLIUM_LLVMPIPE" = xyes -o \
                                          "x$HAVE_GALLIUM_SWR" = xyes)
+AM_CONDITIONAL(HAVE_GALLIUM_V3D, test "x$HAVE_GALLIUM_V3D" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VC4, test "x$HAVE_GALLIUM_VC4" = xyes)
-AM_CONDITIONAL(HAVE_GALLIUM_VC5, test "x$HAVE_GALLIUM_VC5" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VIRGL, test "x$HAVE_GALLIUM_VIRGL" = xyes)
 
 AM_CONDITIONAL(HAVE_GALLIUM_STATIC_TARGETS, test "x$enable_shared_pipe_drivers" = xno)
@@ -2761,7 +3005,7 @@ AM_CONDITIONAL(HAVE_AMD_DRIVERS, test "x$HAVE_GALLIUM_RADEONSI" = xyes -o \
                                       "x$HAVE_RADEON_VULKAN" = xyes)
 
 AM_CONDITIONAL(HAVE_BROADCOM_DRIVERS, test "x$HAVE_GALLIUM_VC4" = xyes -o \
-                                      "x$HAVE_GALLIUM_VC5" = xyes)
+                                      "x$HAVE_GALLIUM_V3D" = xyes)
 
 AM_CONDITIONAL(HAVE_INTEL_DRIVERS, test "x$HAVE_INTEL_VULKAN" = xyes -o \
                                         "x$HAVE_I965_DRI" = xyes)
@@ -2772,8 +3016,8 @@ AM_CONDITIONAL(NEED_RADEON_DRM_WINSYS, test "x$HAVE_GALLIUM_R300" = xyes -o \
 AM_CONDITIONAL(NEED_WINSYS_XLIB, test "x$enable_glx" = xgallium-xlib)
 AM_CONDITIONAL(HAVE_GALLIUM_COMPUTE, test x$enable_opencl = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_LLVM, test "x$enable_llvm" = xyes)
+AM_CONDITIONAL(USE_V3D_SIMULATOR, test x$USE_V3D_SIMULATOR = xyes)
 AM_CONDITIONAL(USE_VC4_SIMULATOR, test x$USE_VC4_SIMULATOR = xyes)
-AM_CONDITIONAL(USE_VC5_SIMULATOR, test x$USE_VC5_SIMULATOR = xyes)
 
 AM_CONDITIONAL(HAVE_LIBDRM, test "x$have_libdrm" = xyes)
 AM_CONDITIONAL(HAVE_OSMESA, test "x$enable_osmesa" = xyes)
@@ -2790,8 +3034,8 @@ AM_CONDITIONAL(HAVE_ARM_ASM, test "x$asm_arch" = xarm)
 
 AC_SUBST([NINE_MAJOR], 1)
 AC_SUBST([NINE_MINOR], 0)
-AC_SUBST([NINE_TINY], 0)
-AC_SUBST([NINE_VERSION], "$NINE_MAJOR.$NINE_MINOR.$NINE_TINY")
+AC_SUBST([NINE_PATCH], 0)
+AC_SUBST([NINE_VERSION], "$NINE_MAJOR.$NINE_MINOR.$NINE_PATCH")
 
 AC_SUBST([VDPAU_MAJOR], 1)
 AC_SUBST([VDPAU_MINOR], 0)
@@ -2808,15 +3052,10 @@ AM_CONDITIONAL(HAVE_VULKAN_COMMON, test "x$VULKAN_DRIVERS" != "x")
 AC_SUBST([XVMC_MAJOR], 1)
 AC_SUBST([XVMC_MINOR], 0)
 
-XA_HEADER="$srcdir/src/gallium/state_trackers/xa/xa_tracker.h"
-XA_MAJOR=`grep "#define XA_TRACKER_VERSION_MAJOR" $XA_HEADER | $SED 's/^#define XA_TRACKER_VERSION_MAJOR //'`
-XA_MINOR=`grep "#define XA_TRACKER_VERSION_MINOR" $XA_HEADER | $SED 's/^#define XA_TRACKER_VERSION_MINOR //'`
-XA_TINY=`grep "#define XA_TRACKER_VERSION_PATCH" $XA_HEADER | $SED 's/^#define XA_TRACKER_VERSION_PATCH //'`
-
-AC_SUBST([XA_MAJOR], $XA_MAJOR)
-AC_SUBST([XA_MINOR], $XA_MINOR)
-AC_SUBST([XA_TINY], $XA_TINY)
-AC_SUBST([XA_VERSION], "$XA_MAJOR.$XA_MINOR.$XA_TINY")
+AC_SUBST([XA_MAJOR], 2)
+AC_SUBST([XA_MINOR], 4)
+AC_SUBST([XA_PATCH], 0)
+AC_SUBST([XA_VERSION], "$XA_MAJOR.$XA_MINOR.$XA_PATCH")
 
 AC_ARG_ENABLE(valgrind,
               [AS_HELP_STRING([--enable-valgrind],
@@ -2863,47 +3102,44 @@ AC_CONFIG_FILES([Makefile
                  src/egl/Makefile
                  src/egl/main/egl.pc
                  src/egl/wayland/wayland-drm/Makefile
-                 src/egl/wayland/wayland-egl/Makefile
-                 src/egl/wayland/wayland-egl/wayland-egl.pc
                  src/gallium/Makefile
                  src/gallium/auxiliary/Makefile
                  src/gallium/auxiliary/pipe-loader/Makefile
                  src/gallium/drivers/freedreno/Makefile
-                 src/gallium/drivers/ddebug/Makefile
                  src/gallium/drivers/i915/Makefile
                  src/gallium/drivers/llvmpipe/Makefile
-                 src/gallium/drivers/noop/Makefile
                  src/gallium/drivers/nouveau/Makefile
                  src/gallium/drivers/pl111/Makefile
                  src/gallium/drivers/r300/Makefile
                  src/gallium/drivers/r600/Makefile
-                 src/gallium/drivers/radeon/Makefile
                  src/gallium/drivers/radeonsi/Makefile
-                 src/gallium/drivers/rbug/Makefile
                  src/gallium/drivers/softpipe/Makefile
                  src/gallium/drivers/svga/Makefile
                  src/gallium/drivers/swr/Makefile
-                 src/gallium/drivers/trace/Makefile
+                 src/gallium/drivers/tegra/Makefile
                  src/gallium/drivers/etnaviv/Makefile
                  src/gallium/drivers/imx/Makefile
+                 src/gallium/drivers/v3d/Makefile
                  src/gallium/drivers/vc4/Makefile
-                 src/gallium/drivers/vc5/Makefile
                  src/gallium/drivers/virgl/Makefile
                  src/gallium/state_trackers/clover/Makefile
                  src/gallium/state_trackers/dri/Makefile
                  src/gallium/state_trackers/glx/xlib/Makefile
                  src/gallium/state_trackers/nine/Makefile
-                 src/gallium/state_trackers/omx_bellagio/Makefile
+                 src/gallium/state_trackers/omx/Makefile
+                 src/gallium/state_trackers/omx/bellagio/Makefile
+                 src/gallium/state_trackers/omx/tizonia/Makefile
                  src/gallium/state_trackers/osmesa/Makefile
                  src/gallium/state_trackers/va/Makefile
                  src/gallium/state_trackers/vdpau/Makefile
                  src/gallium/state_trackers/xa/Makefile
+                 src/gallium/state_trackers/xa/xa_tracker.h
                  src/gallium/state_trackers/xvmc/Makefile
                  src/gallium/targets/d3dadapter9/Makefile
                  src/gallium/targets/d3dadapter9/d3d.pc
                  src/gallium/targets/dri/Makefile
                  src/gallium/targets/libgl-xlib/Makefile
-                 src/gallium/targets/omx-bellagio/Makefile
+                 src/gallium/targets/omx/Makefile
                  src/gallium/targets/opencl/Makefile
                  src/gallium/targets/opencl/mesa.icd
                  src/gallium/targets/osmesa/Makefile
@@ -2930,8 +3166,9 @@ AC_CONFIG_FILES([Makefile
                  src/gallium/winsys/sw/null/Makefile
                  src/gallium/winsys/sw/wrapper/Makefile
                  src/gallium/winsys/sw/xlib/Makefile
+                 src/gallium/winsys/tegra/drm/Makefile
+                 src/gallium/winsys/v3d/drm/Makefile
                  src/gallium/winsys/vc4/drm/Makefile
-                 src/gallium/winsys/vc5/drm/Makefile
                  src/gallium/winsys/virgl/drm/Makefile
                  src/gallium/winsys/virgl/vtest/Makefile
                  src/gbm/Makefile
@@ -2966,7 +3203,9 @@ AC_CONFIG_FILES([Makefile
                  src/mesa/state_tracker/tests/Makefile
                  src/util/Makefile
                  src/util/tests/hash_table/Makefile
+                 src/util/tests/set/Makefile
                  src/util/tests/string_buffer/Makefile
+                 src/util/tests/vma/Makefile
                  src/util/xmlpool/Makefile
                  src/vulkan/Makefile])
 
@@ -2978,6 +3217,9 @@ $SED -i -e 's/brw_blorp.cpp/brw_blorp.c/' src/mesa/drivers/dri/i965/.deps/brw_bl
 
 rm -f src/compiler/spirv/spirv_info.lo
 echo "# dummy" > src/compiler/spirv/.deps/spirv_info.Plo
+
+rm -f src/compiler/nir/.deps/nir_intrinsics.Plo
+echo "# dummy" > src/compiler/nir/.deps/nir_intrinsics.Plo
 
 dnl
 dnl Output some configuration info for the user
@@ -3096,7 +3338,11 @@ fi
 
 echo ""
 if test "x$HAVE_GALLIUM_SWR" != x; then
-    echo "        SWR archs:       $swr_archs"
+    if test "x$HAVE_SWR_BUILTIN" = xyes; then
+        echo "        SWR archs:       $swr_archs (builtin)"
+    else
+        echo "        SWR archs:       $swr_archs"
+    fi
 fi
 
 dnl Libraries
@@ -3116,6 +3362,7 @@ defines=`echo $DEFINES | $SED 's/^ *//;s/  */ /;s/ *$//'`
 echo ""
 echo "        CFLAGS:          $cflags"
 echo "        CXXFLAGS:        $cxxflags"
+echo "        CXX11_CXXFLAGS:  $CXX11_CXXFLAGS"
 echo "        LDFLAGS:         $ldflags"
 echo "        Macros:          $defines"
 echo ""

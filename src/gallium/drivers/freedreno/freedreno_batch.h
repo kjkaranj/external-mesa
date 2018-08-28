@@ -66,10 +66,11 @@ struct fd_hw_sample;
 struct fd_batch {
 	struct pipe_reference reference;
 	unsigned seqno;
-	unsigned idx;
+	unsigned idx;       /* index into cache->batches[] */
 
 	int in_fence_fd;
 	bool needs_out_fence_fd;
+	struct pipe_fence_handle *fence;
 
 	struct fd_context *ctx;
 
@@ -92,7 +93,10 @@ struct fd_batch {
 		FD_BUFFER_ALL     = FD_BUFFER_COLOR | FD_BUFFER_DEPTH | FD_BUFFER_STENCIL,
 	} cleared, partial_cleared, restore, resolve;
 
+	/* is this a non-draw batch (ie compute/blit which has no pfb state)? */
+	bool nondraw : 1;
 	bool needs_flush : 1;
+	bool flushed : 1;
 	bool blit : 1;
 	bool back_blit : 1;      /* only blit so far is resource shadowing back-blit */
 
@@ -112,7 +116,6 @@ struct fd_batch {
 		FD_GMEM_DEPTH_ENABLED        = 0x02,
 		FD_GMEM_STENCIL_ENABLED      = 0x04,
 
-		FD_GMEM_MSAA_ENABLED         = 0x08,
 		FD_GMEM_BLEND_ENABLED        = 0x10,
 		FD_GMEM_LOGICOP_ENABLED      = 0x20,
 	} gmem_reason;
@@ -136,6 +139,11 @@ struct fd_batch {
 	 * on whether we using binning or not:
 	 */
 	struct util_dynarray draw_patches;
+
+	/* Keep track of blitter GMEM offsets that need to be patched up once we
+	 * know the gmem layout:
+	 */
+	struct util_dynarray gmem_patches;
 
 	/* Keep track of writes to RB_RENDER_CONTROL which need to be patched
 	 * once we know whether or not to use GMEM, and GMEM tile pitch.
@@ -201,11 +209,12 @@ struct fd_batch {
 	uint32_t dependents_mask;
 };
 
-struct fd_batch * fd_batch_create(struct fd_context *ctx);
+struct fd_batch * fd_batch_create(struct fd_context *ctx, bool nondraw);
 
 void fd_batch_reset(struct fd_batch *batch);
 void fd_batch_sync(struct fd_batch *batch);
-void fd_batch_flush(struct fd_batch *batch, bool sync);
+void fd_batch_flush(struct fd_batch *batch, bool sync, bool force);
+void fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep);
 void fd_batch_resource_used(struct fd_batch *batch, struct fd_resource *rsc, bool write);
 void fd_batch_check_size(struct fd_batch *batch);
 
@@ -224,16 +233,6 @@ void __fd_batch_destroy(struct fd_batch *batch);
  * __fd_batch_destroy() needs to unref resources)
  */
 
-static inline void
-fd_batch_reference(struct fd_batch **ptr, struct fd_batch *batch)
-{
-	struct fd_batch *old_batch = *ptr;
-	if (pipe_reference_described(&(*ptr)->reference, &batch->reference,
-			(debug_reference_descriptor)__fd_batch_describe))
-		__fd_batch_destroy(old_batch);
-	*ptr = batch;
-}
-
 /* fwd-decl prototypes to untangle header dependency :-/ */
 static inline void fd_context_assert_locked(struct fd_context *ctx);
 static inline void fd_context_lock(struct fd_context *ctx);
@@ -244,19 +243,30 @@ fd_batch_reference_locked(struct fd_batch **ptr, struct fd_batch *batch)
 {
 	struct fd_batch *old_batch = *ptr;
 
+	/* only need lock if a reference is dropped: */
 	if (old_batch)
 		fd_context_assert_locked(old_batch->ctx);
-	else if (batch)
-		fd_context_assert_locked(batch->ctx);
 
 	if (pipe_reference_described(&(*ptr)->reference, &batch->reference,
-			(debug_reference_descriptor)__fd_batch_describe)) {
-		struct fd_context *ctx = old_batch->ctx;
-		fd_context_unlock(ctx);
+			(debug_reference_descriptor)__fd_batch_describe))
 		__fd_batch_destroy(old_batch);
-		fd_context_lock(ctx);
-	}
+
 	*ptr = batch;
+}
+
+static inline void
+fd_batch_reference(struct fd_batch **ptr, struct fd_batch *batch)
+{
+	struct fd_batch *old_batch = *ptr;
+	struct fd_context *ctx = old_batch ? old_batch->ctx : NULL;
+
+	if (ctx)
+		fd_context_lock(ctx);
+
+	fd_batch_reference_locked(ptr, batch);
+
+	if (ctx)
+		fd_context_unlock(ctx);
 }
 
 #include "freedreno_context.h"

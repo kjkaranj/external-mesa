@@ -22,24 +22,28 @@ radv_entrypoints = custom_target(
   'radv_entrypoints.[ch]',
   input : ['radv_entrypoints_gen.py', vk_api_xml],
   output : ['radv_entrypoints.h', 'radv_entrypoints.c'],
-  command : [prog_python2, '@INPUT0@', '--xml', '@INPUT1@',
-             '--outdir', meson.current_build_dir()],
+  command : [
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--outdir',
+    meson.current_build_dir()
+  ],
   depend_files : files('radv_extensions.py'),
 )
 
 radv_extensions_c = custom_target(
   'radv_extensions.c',
   input : ['radv_extensions.py', vk_api_xml],
-  output : ['radv_extensions.c'],
-  command : [prog_python2, '@INPUT0@', '--xml', '@INPUT1@',
-             '--out', '@OUTPUT@'],
+  output : ['radv_extensions.c', 'radv_extensions.h'],
+  command : [
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--out-c', '@OUTPUT0@',
+    '--out-h', '@OUTPUT1@'
+  ],
 )
 
 vk_format_table_c = custom_target(
   'vk_format_table.c',
   input : ['vk_format_table.py', 'vk_format_layout.csv'],
   output : 'vk_format_table.c',
-  command : [prog_python2, '@INPUT@'],
+  command : [prog_python, '@INPUT@'],
   depend_files : files('vk_format_parse.py'),
   capture : true,
 )
@@ -63,6 +67,7 @@ libradv_files = files(
   'radv_descriptor_set.h',
   'radv_formats.c',
   'radv_image.c',
+  'radv_llvm_helper.cpp',
   'radv_meta.c',
   'radv_meta.h',
   'radv_meta_blit.c',
@@ -76,6 +81,7 @@ libradv_files = files(
   'radv_meta_resolve.c',
   'radv_meta_resolve_cs.c',
   'radv_meta_resolve_fs.c',
+  'radv_nir_to_llvm.c',
   'radv_pass.c',
   'radv_pipeline.c',
   'radv_pipeline_cache.c',
@@ -83,6 +89,8 @@ libradv_files = files(
   'radv_radeon_winsys.h',
   'radv_shader.c',
   'radv_shader.h',
+  'radv_shader_helper.h',
+  'radv_shader_info.c',
   'radv_query.c',
   'radv_util.c',
   'radv_util.h',
@@ -109,32 +117,61 @@ if with_platform_wayland
   libradv_files += files('radv_wsi_wayland.c')
 endif
 
+if with_platform_drm
+  radv_flags += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+  libradv_files += files('radv_wsi_display.c')
+endif
+
+if with_xlib_lease
+  radv_deps += [dep_xcb_xrandr, dep_xlib_xrandr]
+  radv_flags += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
+endif
+
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, radv_extensions_c, nir_opcodes_h, vk_format_table_c],
-  include_directories : [inc_common, inc_amd, inc_amd_common, inc_compiler,
-                         inc_vulkan_util, inc_vulkan_wsi],
-  link_with : [libamd_common, libamdgpu_addrlib, libvulkan_util,
-               libvulkan_wsi, libnir, libmesa_util],
-  dependencies : [dep_llvm, dep_libdrm_amdgpu, dep_thread, dep_elf, dep_dl,
-                  dep_m, dep_valgrind],
+  [libradv_files, radv_entrypoints, radv_extensions_c, vk_format_table_c],
+  include_directories : [
+    inc_common, inc_amd, inc_amd_common, inc_compiler, inc_vulkan_util,
+    inc_vulkan_wsi,
+  ],
+  link_with : [
+    libamd_common, libamdgpu_addrlib, libvulkan_util, libvulkan_wsi,
+    libmesa_util,
+  ],
+  dependencies : [
+    dep_llvm, dep_libdrm_amdgpu, dep_thread, dep_elf, dep_dl, dep_m,
+    dep_valgrind,
+    idep_nir,
+  ],
   c_args : [c_vis_args, no_override_init_args, radv_flags],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )
 
-radv_data = configuration_data()
-radv_data.set('install_libdir', join_paths(get_option('prefix'), get_option('libdir')))
-radv_data.set('libvulkan_radeon_path', libvulkan_radeon.full_path())
-
-configure_file(
-  configuration : radv_data,
-  input : 'radeon_icd.json.in',
-  output : 'radeon_icd.@0@.json'.format(target_machine.cpu()),
+radeon_icd = custom_target(
+  'radeon_icd',
+  input : 'radv_icd.py',
+  output : 'radeon_icd.@0@.json'.format(host_machine.cpu()),
+  command : [
+    prog_python, '@INPUT@',
+    '--lib-path', join_paths(get_option('prefix'), get_option('libdir')),
+    '--out', '@OUTPUT@',
+  ],
+  depend_files : files('radv_extensions.py'),
+  build_by_default : true,
   install_dir : with_vulkan_icd_dir,
+  install : true,
 )
-configure_file(
-  configuration : radv_data,
-  input : 'dev_icd.json.in',
-  output : 'dev_icd.json'
+
+radv_dev_icd = custom_target(
+  'radv_dev_icd',
+  input : 'radv_icd.py',
+  output : 'dev_icd.json',
+  command : [
+    prog_python, '@INPUT@', '--lib-path', meson.current_build_dir(),
+    '--out', '@OUTPUT@'
+  ],
+  depend_files : files('radv_extensions.py'),
+  build_by_default : true,
+  install : false,
 )

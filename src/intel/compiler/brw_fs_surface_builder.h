@@ -49,6 +49,13 @@ namespace brw {
                           brw_predicate pred = BRW_PREDICATE_NONE);
 
       fs_reg
+      emit_untyped_atomic_float(const fs_builder &bld,
+                                const fs_reg &surface, const fs_reg &addr,
+                                const fs_reg &src0, const fs_reg &src1,
+                                unsigned dims, unsigned rsize, unsigned op,
+                                brw_predicate pred);
+
+      fs_reg
       emit_typed_read(const fs_builder &bld, const fs_reg &surface,
                       const fs_reg &addr, unsigned dims, unsigned size);
 
@@ -63,6 +70,20 @@ namespace brw {
                         const fs_reg &src0, const fs_reg &src1,
                         unsigned dims, unsigned rsize, unsigned op,
                         brw_predicate pred = BRW_PREDICATE_NONE);
+
+      fs_reg
+      emit_byte_scattered_read(const fs_builder &bld,
+                               const fs_reg &surface, const fs_reg &addr,
+                               unsigned dims, unsigned size,
+                               unsigned bit_size,
+                               brw_predicate pred = BRW_PREDICATE_NONE);
+
+      void
+      emit_byte_scattered_write(const fs_builder &bld, const fs_reg &surface,
+                                const fs_reg &addr, const fs_reg &src,
+                                unsigned dims,
+                                unsigned bit_size,
+                                brw_predicate pred = BRW_PREDICATE_NONE);
    }
 
    namespace image_access {
